@@ -1,0 +1,24 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Fix C compiler warning about uninitialized variable peercount
+
+
+--- a/src/ntp.c	2020-08-01 00:56:09.608057581 +0300
++++ b/src/ntp.c	2020-08-01 15:22:42.981445052 +0300
+@@ -511,7 +511,7 @@ ntp_dispatch_imsg_dns(void)
+ 	u_int16_t		 dlen;
+ 	u_char			*p;
+ 	struct ntp_addr		*h;
+-	size_t			 addrcount, peercount;
++	size_t			 addrcount, peercount = 0;
+ 	int			 n;
+ 
+ 	if (((n = imsg_read(ibuf_dns)) == -1 && errno != EAGAIN) || n == 0)
+@@ -540,7 +540,6 @@ ntp_dispatch_imsg_dns(void)
+ 
+ 			if (peer->addr_head.pool) {
+ 				n = 0;
+-				peercount = 0;
+ 
+ 				TAILQ_FOREACH_SAFE(npeer, &conf->ntp_peers,
+ 				    entry, tmp) {

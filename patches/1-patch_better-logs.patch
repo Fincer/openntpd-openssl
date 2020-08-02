@@ -1,0 +1,2248 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Provide human-readable error messages for easier process interpretation
+
+
+--- a/src/client.c	2020-08-01 00:19:23.432392415 +0300
++++ b/src/client.c	2020-08-02 02:02:37.850286445 +0300
+@@ -52,7 +52,7 @@ int
+ client_peer_init(struct ntp_peer *p)
+ {
+ 	if ((p->query = calloc(1, sizeof(struct ntp_query))) == NULL)
+-		fatal("client_peer_init calloc");
++		fatal("NTP client: can't allocate memory for a new NTP peer connection");
+ 	p->query->fd = -1;
+ 	p->query->msg.status = MODE_CLIENT | (NTP_VERSION << 3);
+ 	p->state = STATE_NONE;
+@@ -86,9 +86,14 @@ client_addr_init(struct ntp_peer *p)
+ 			p->state = STATE_DNS_DONE;
+ 			break;
+ 		default:
+-			fatalx("king bula sez: wrong AF in client_addr_init");
++			fatalx("NTP client: NTP peer %s has wrong network address family",
++				p->addr_head.name
++			);
+ 			/* NOTREACHED */
+ 		}
++		log_info("NTP client: DNS query found IP address %s for NTP peer %s",
++			log_sockaddr((struct sockaddr *)&h->ss),
++			p->addr_head.name);
+ 	}
+ 
+ 	p->query->fd = -1;
+@@ -129,6 +134,16 @@ int
+ client_query(struct ntp_peer *p)
+ {
+ 	int	val;
++	struct	ntp_addr	*h;
++	h = p->addr;
++/*
++	if (h != NULL) {
++
++		log_debug("NTP client: listening on NTP peer %s on remote UDP port %d",
++			log_sockaddr((struct sockaddr *)&h->ss),
++			p->addr_head.port);
++	}
++*/
+ 
+ 	if (p->addr == NULL && client_nextaddr(p) == -1) {
+ 		if (conf->settime)
+@@ -156,21 +171,23 @@ client_query(struct ntp_peer *p)
+ 		p->query->fd = socket(p->addr->ss.ss_family, SOCK_DGRAM, 0);
+ 		if (p->query->fd == -1) {
+ 			if (errno == EAFNOSUPPORT) {
+-				log_warn("client_query socket");
++				log_warn("NTP client: can't create UDP socket");
+ 				client_nextaddr(p);
+ 				set_next(p, error_interval());
+ 				return (-1);
+ 			} else
+-				fatal("client_query socket");
++				fatal("NTP client: NTP peer has unknown network address family %s",
++					  log_sockaddr((struct sockaddr *)&h->ss)
++				);
+ 		}
+ 
+ 		if (p->addr->ss.ss_family == qa4->sa_family) {
+ 			if (bind(p->query->fd, qa4, SA_LEN(qa4)) == -1)
+-				fatal("couldn't bind to IPv4 query address: %s",
++				fatal("NTP client: can't bind to NTP peer IPv4 query address %s",
+ 				    log_sockaddr(qa4));
+ 		} else if (p->addr->ss.ss_family == qa6->sa_family) {
+ 			if (bind(p->query->fd, qa6, SA_LEN(qa6)) == -1)
+-				fatal("couldn't bind to IPv6 query address: %s",
++				fatal("NTP client: can't bind to NTP peer IPv6 query address %s",
+ 				    log_sockaddr(qa6));
+ 		}
+ 
+@@ -187,17 +204,17 @@ client_query(struct ntp_peer *p)
+ 				p->senderrors++;
+ 				return (-1);
+ 			} else
+-				fatal("client_query connect");
++				fatal("NTP client: can't connect to NTP peer due to socket error");
+ 		}
+ 		val = IPTOS_LOWDELAY;
+ 		if (p->addr->ss.ss_family == AF_INET && setsockopt(p->query->fd,
+ 		    IPPROTO_IP, IP_TOS, &val, sizeof(val)) == -1)
+-			log_warn("setsockopt IPTOS_LOWDELAY");
++			log_warn("NTP client: can't set NTP peer IPv4 socket field IP_TOS");
+ #ifdef SO_TIMESTAMP
+ 		val = 1;
+ 		if (setsockopt(p->query->fd, SOL_SOCKET, SO_TIMESTAMP,
+ 		    &val, sizeof(val)) == -1)
+-			fatal("setsockopt SO_TIMESTAMP");
++			fatal("NTP client: can't set NTP peer IPv4 socket control option SO_TIMESTAMP");
+ #endif
+ 	}
+ 
+@@ -256,7 +273,7 @@ handle_auto(uint8_t trusted, double offs
+ 
+ 	if (offset < AUTO_THRESHOLD) {
+ 		/* don't bother */
+-		priv_settime(0, "offset is negative or close enough");
++		priv_settime(0, "NTP client: NTP peer offset is negative or close enough");
+ 		return;
+ 	}
+ 	/* collect some more */
+@@ -305,21 +322,21 @@ client_dispatch(struct ntp_peer *p, u_in
+ 		    errno == ENETUNREACH || errno == ENETDOWN ||
+ 		    errno == ECONNREFUSED || errno == EADDRNOTAVAIL ||
+ 		    errno == ENOPROTOOPT || errno == ENOENT) {
+-			client_log_error(p, "recvmsg", errno);
++			client_log_error(p, "socket message reception", errno);
+ 			set_next(p, error_interval());
+ 			return (0);
+ 		} else
+-			fatal("recvfrom");
++			fatal("NTP client: can't get socket message for an unknown reason");
+ 	}
+ 
+ 	if (somsg.msg_flags & MSG_TRUNC) {
+-		client_log_error(p, "recvmsg packet", EMSGSIZE);
++		client_log_error(p, "socket packet message reception", EMSGSIZE);
+ 		set_next(p, error_interval());
+ 		return (0);
+ 	}
+ 
+ 	if (somsg.msg_flags & MSG_CTRUNC) {
+-		client_log_error(p, "recvmsg control data", E2BIG);
++		client_log_error(p, "socket control data message reception", E2BIG);
+ 		set_next(p, error_interval());
+ 		return (0);
+ 	}
+@@ -359,7 +376,7 @@ client_dispatch(struct ntp_peer *p, u_in
+ 		}
+ 		interval = error_interval();
+ 		set_next(p, interval);
+-		log_info("reply from %s: not synced (%s), next query %llds",
++		log_info("NTP client: reply from %-16s is not synced (%s), next query in %llds",
+ 		    log_sockaddr((struct sockaddr *)&p->addr->ss), s,
+ 			(long long)interval);
+ 		return (0);
+@@ -387,7 +404,7 @@ client_dispatch(struct ntp_peer *p, u_in
+ 	/* Detect liars */
+ 	if (!p->trusted && conf->constraint_median != 0 &&
+ 	    (constraint_check(T2) != 0 || constraint_check(T3) != 0)) {
+-		log_info("reply from %s: constraint check failed",
++		log_info("NTP client: reply from %-16s constraint check failed",
+ 		    log_sockaddr((struct sockaddr *)&p->addr->ss));
+ 		set_next(p, error_interval());
+ 		return (0);
+@@ -399,8 +416,8 @@ client_dispatch(struct ntp_peer *p, u_in
+ 	if (p->reply[p->shift].delay < 0) {
+ 		interval = error_interval();
+ 		set_next(p, interval);
+-		log_info("reply from %s: negative delay %fs, "
+-		    "next query %llds",
++		log_info("NTP client: reply from %-16s has negative delay %9fs, "
++		    "next query in %llds",
+ 		    log_sockaddr((struct sockaddr *)&p->addr->ss),
+ 		    p->reply[p->shift].delay, (long long)interval);
+ 		return (0);
+@@ -449,13 +466,13 @@ client_dispatch(struct ntp_peer *p, u_in
+ 	if (p->trustlevel < TRUSTLEVEL_MAX) {
+ 		if (p->trustlevel < TRUSTLEVEL_BADPEER &&
+ 		    p->trustlevel + 1 >= TRUSTLEVEL_BADPEER)
+-			log_info("peer %s now valid",
++			log_info("NTP client: NTP peer %s is valid now",
+ 			    log_sockaddr((struct sockaddr *)&p->addr->ss));
+ 		p->trustlevel++;
+ 	}
+ 
+-	log_debug("reply from %s: offset %f delay %f, "
+-	    "next query %llds",
++	log_debug("NTP client: reply from %-16s offset: %9fs, delay: %9fs, "
++	    "next query in %llds",
+ 	    log_sockaddr((struct sockaddr *)&p->addr->ss),
+ 	    p->reply[p->shift].offset, p->reply[p->shift].delay,
+ 	    (long long)interval);
+@@ -518,9 +535,9 @@ client_log_error(struct ntp_peer *peer,
+ 
+ 	address = log_sockaddr((struct sockaddr *)&peer->addr->ss);
+ 	if (peer->lasterror == error) {
+-		log_debug("%s %s: %s", operation, address, strerror(error));
++		log_debug("NTP client: NTP peer %s, error in %s: %s", operation, address, strerror(error));
+ 		return;
+ 	}
+ 	peer->lasterror = error;
+-	log_warn("%s %s", operation, address);
++	log_warn("NTP client: NTP peer %s, error in %s", operation, address);
+ }
+--- a/src/config.c	2020-08-01 00:19:23.449059082 +0300
++++ b/src/config.c	2020-07-31 23:11:30.429054797 +0300
+@@ -44,7 +44,7 @@ host(const char *s, struct ntp_addr **hn
+ 
+ 	if (!strcmp(s, "*")) {
+ 		if ((h = calloc(1, sizeof(*h))) == NULL)
+-			fatal(NULL);
++			fatal("can't allocate memory for NTP peer address");
+ 	} else {
+ 		if ((h = host_ip(s)) == NULL) {
+ 			non_numeric = 1;
+@@ -69,7 +69,7 @@ host_ip(const char *s)
+ 		if (res->ai_family == AF_INET ||
+ 		    res->ai_family == AF_INET6) {
+ 			if ((h = calloc(1, sizeof(*h))) == NULL)
+-				fatal(NULL);
++				fatal("can't allocate memory for NTP peer IP address");
+ 			memcpy(&h->ss, res->ai_addr, res->ai_addrlen);
+ 		}
+ 		freeaddrinfo(res);
+@@ -110,7 +110,7 @@ host_dns1(const char *s, struct ntp_addr
+ 		return (0);
+ 	}
+ 	if (error) {
+-		log_warnx("could not parse \"%s\": %s", s,
++		log_warnx("DNS process: can't parse \"%s\": %s", s,
+ 		    gai_strerror(error));
+ 		return (-1);
+ 	}
+@@ -120,7 +120,7 @@ host_dns1(const char *s, struct ntp_addr
+ 		    res->ai_family != AF_INET6)
+ 			continue;
+ 		if ((h = calloc(1, sizeof(*h))) == NULL)
+-			fatal(NULL);
++			fatal("DNS process: can't allocate memory for NTP peer address");
+ 		memcpy(&h->ss, res->ai_addr, res->ai_addrlen);
+ 		h->notauth = notauth;
+ 
+@@ -139,19 +139,19 @@ host_dns(const char *s, int synced, stru
+ {
+ 	int error;
+ 
+-	log_debug("trying to resolve %s", s);
++	log_debug("DNS process: trying to resolve %s", s);
+ 	error = host_dns1(s, hn, 0);
+ #ifdef RES_USE_CD
+ 	if (!synced && error <= 0) {
+ 		int save_opts;
+-		log_debug("no luck, trying to resolve %s without checking", s);
++		log_debug("DNS process: trying to resolve %s without checking", s);
+ 		save_opts = _res.options;
+ 		_res.options |= RES_USE_CD;
+ 		error = host_dns1(s, hn, 1);
+ 		_res.options = save_opts;
+ 	}
+ #endif
+-	log_debug("resolve %s done: %d", s, error);
++	log_debug("DNS process: resolve for %s done: %d", s, error);
+ 	return error;
+ }
+ 
+@@ -161,7 +161,7 @@ new_peer(void)
+ 	struct ntp_peer	*p;
+ 
+ 	if ((p = calloc(1, sizeof(struct ntp_peer))) == NULL)
+-		fatal("new_peer calloc");
++		fatal("NTP client: can't allocate memory for a new NTP peer");
+ 	p->id = ++maxid;
+ 
+ 	return (p);
+@@ -173,9 +173,9 @@ new_sensor(char *device)
+ 	struct ntp_conf_sensor	*s;
+ 
+ 	if ((s = calloc(1, sizeof(struct ntp_conf_sensor))) == NULL)
+-		fatal("new_sensor calloc");
++		fatal("sensor: can't allocate memory for a new sensor");
+ 	if ((s->device = strdup(device)) == NULL)
+-		fatal("new_sensor strdup");
++		fatal("sensor: can't duplicate memory address for a new sensor");
+ 
+ 	return (s);
+ }
+@@ -186,12 +186,12 @@ new_constraint(void)
+ 	struct constraint	*p;
+ 
+ 	if ((p = calloc(1, sizeof(struct constraint))) == NULL)
+-		fatal("new_constraint calloc");
++		fatal("constraint: can't allocate memory for a new constraint");
+ 	p->id = ++constraint_maxid;
+ 	p->fd = -1;
+ 
+ #ifndef HAVE_LIBTLS
+-	log_warnx("constraint configured without libtls support");
++	log_warnx("constraint configured without LibreSSL support");
+ #endif
+ 	return (p);
+ }
+--- a/src/constraint.c	2020-08-01 00:19:23.425725748 +0300
++++ b/src/constraint.c	2020-08-02 01:55:31.236952662 +0300
+@@ -135,8 +135,7 @@ constraint_addr_init(struct constraint *
+ 		cstr->state = STATE_DNS_DONE;
+ 		break;
+ 	default:
+-		/* XXX king bula sez it? */
+-		fatalx("wrong AF in constraint_addr_init");
++		fatalx("constraint id %d: wrong network address family", cstr->id);
+ 		/* NOTREACHED */
+ 	}
+ 
+@@ -238,23 +237,23 @@ priv_constraint_msg(u_int32_t id, u_int8
+ 	int			 rv;
+ 
+ 	if ((cstr = constraint_byid(id)) != NULL) {
+-		log_warnx("IMSG_CONSTRAINT_QUERY repeated for id %d", id);
++		log_warnx("constraint id %d: repeated query", id);
+ 		return;
+ 	}
+ 
+ 	if (len < sizeof(am)) {
+-		log_warnx("invalid IMSG_CONSTRAINT_QUERY received");
++		log_warnx("constraint id %d: longer query expected", id);
+ 		return;
+ 	}
+ 	memcpy(&am, data, sizeof(am));
+ 	if (len != (sizeof(am) + am.namelen + am.pathlen)) {
+-		log_warnx("invalid IMSG_CONSTRAINT_QUERY received");
++		log_warnx("constraint id %d: invalid query received", id);
+ 		return;
+ 	}
+ 	/* Additional imsg data is obtained in the unpriv child */
+ 
+ 	if ((h = calloc(1, sizeof(*h))) == NULL)
+-		fatal("calloc ntp_addr");
++		fatal("constraint id %d: can't allocate memory for network address", id);
+ 	memcpy(h, &am.a, sizeof(*h));
+ 	h->next = NULL;
+ 
+@@ -267,19 +266,23 @@ priv_constraint_msg(u_int32_t id, u_int8
+ 
+ 	if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, AF_UNSPEC,
+ 	    pipes) == -1)
+-		fatal("%s pipes", __func__);
++		fatal("constraint id %d: can't create required socket pairs (%s)",
++			id, __func__
++		);
+ 
+ 	/* Prepare and send constraint data to child. */
+ 	cstr->fd = pipes[0];
+ 	imsg_init(&cstr->ibuf, cstr->fd);
+ 	if (imsg_compose(&cstr->ibuf, IMSG_CONSTRAINT_QUERY, id, 0, -1,
+ 	    data, len) == -1)
+-		fatal("%s: imsg_compose", __func__);
++		fatal("constraint id %d: can't compose data from parent process (%s)",
++			id, __func__
++		);
+ 	do {
+ 		rv = imsg_flush(&cstr->ibuf);
+ 	} while (rv == -1 && errno == EAGAIN);
+ 	if (rv == -1)
+-		fatal("imsg_flush");
++		fatal("constraint id %d: can't flush old data", id);
+ 
+ 	/*
+ 	 * Fork child handlers and make sure to do any sensitive work in the
+@@ -301,11 +304,14 @@ priv_constraint_readquery(struct constra
+ 
+ 	/* Read the message our parent left us. */
+ 	if (((n = imsg_read(&cstr->ibuf)) == -1 && errno != EAGAIN) || n == 0)
+-		fatal("%s: imsg_read", __func__);
++		fatal("constraint: can't read message from parent process (%s)",
++			  __func__);
+ 	if (((n = imsg_get(&cstr->ibuf, &imsg)) == -1) || n == 0)
+-		fatal("%s: imsg_get", __func__);
++		fatal("constraint: can't get message from parent process (%s)",
++			  __func__);
+ 	if (imsg.hdr.type != IMSG_CONSTRAINT_QUERY)
+-		fatalx("%s: invalid message type", __func__);
++		fatalx("constraint: invalid message type from parent process (%s)",
++			   __func__);
+ 
+ 	/*
+ 	 * Copy the message contents just like our father:
+@@ -313,16 +319,19 @@ priv_constraint_readquery(struct constra
+ 	 */
+ 	mlen = imsg.hdr.len - IMSG_HEADER_SIZE;
+ 	if (mlen < sizeof(*am))
+-		fatalx("%s: mlen < sizeof(*am)", __func__);
++		fatalx("constraint: expected longer message from parent process (%s)",
++			__func__
++		);
+ 
+ 	memcpy(am, imsg.data, sizeof(*am));
+ 	if (mlen != (sizeof(*am) + am->namelen + am->pathlen))
+-		fatalx("%s: mlen < sizeof(*am) + am->namelen + am->pathlen",
+-		    __func__);
++		fatalx("constraint: invalid message length received from parent process (%s)",
++			   __func__
++			  );
+ 
+ 	if ((h = calloc(1, sizeof(*h))) == NULL ||
+ 	    (*data = calloc(1, mlen)) == NULL)
+-		fatal("%s: calloc", __func__);
++		fatal("constraint: can't allocate memory (%s)", __func__);
+ 
+ 	memcpy(h, &am->a, sizeof(*h));
+ 	h->next = NULL;
+@@ -349,29 +358,27 @@ priv_constraint_child(const char *pw_dir
+ 	struct iovec		 iov[2];
+ 	int			 i, rv;
+ 
+-	log_procinit("constraint");
+-
+ 	if (setpriority(PRIO_PROCESS, 0, 0) == -1)
+-		log_warn("could not set priority");
++		log_warn("constraint: can't set priority for subprocess");
+ 
+ #ifdef HAVE_LIBTLS
+ 	/* Init TLS and load CA certs before chroot() */
+ 	if (tls_init() == -1)
+-		fatalx("tls_init");
++		fatalx("constraint: can't initialize LibreSSL engine");
+ 	if ((conf->ca = tls_load_file(tls_default_ca_cert_file(),
+ 	    &conf->ca_len, NULL)) == NULL)
+-		fatalx("failed to load constraint ca");
++		log_warnx("constraint: failed to load CA certificate bundle file");
+ #endif
+ 
+ 	if (chroot(pw_dir) == -1)
+-		fatal("chroot");
++		fatal("constraint: can't set isolated working directory for subprocess");
+ 	if (chdir("/") == -1)
+-		fatal("chdir(\"/\")");
++		fatal("constraint: can't change subprocess working directory");
+ 
+ 	if (setgroups(1, &pw_gid) ||
+ 	    setresgid(pw_gid, pw_gid, pw_gid) ||
+ 	    setresuid(pw_uid, pw_uid, pw_uid))
+-		fatal("can't drop privileges");
++		fatal("constraint: can't drop subprocess privileges");
+ 
+ 	/* Reset all signal handlers */
+ 	memset(&sa, 0, sizeof(sa));
+@@ -382,7 +389,7 @@ priv_constraint_child(const char *pw_dir
+ 		sigaction(i, &sa, NULL);
+ 
+ 	if (pledge("stdio inet", NULL) == -1)
+-		fatal("pledge");
++		fatal("constraint: can't restrict subprocess privileges");
+ 
+ 	cstr.fd = CONSTRAINT_PASSFD;
+ 	imsg_init(&cstr.ibuf, cstr.fd);
+@@ -398,10 +405,11 @@ priv_constraint_child(const char *pw_dir
+ 	    SA_LEN((struct sockaddr *)&cstr.addr->ss),
+ 	    addr, sizeof(addr), NULL, 0,
+ 	    NI_NUMERICHOST) != 0)
+-		fatalx("%s getnameinfo", __func__);
++		fatalx("constraint %s: can't get host and service name from IP address"
++		" (getnameinfo) (%s)", addr, __func__);
+ 
+-	log_debug("constraint request to %s", addr);
+-	setproctitle("constraint from %s", addr);
++	log_debug("constraint %s: setting HTTPS request", addr);
++	setproctitle("constraint %s: new HTTPS request", addr);
+ 	(void)closefrom(CONSTRAINT_PASSFD + 1);
+ 
+ 	/*
+@@ -411,25 +419,27 @@ priv_constraint_child(const char *pw_dir
+ 	 * but we keep it as a safety belt; especially for portability.
+ 	 */
+ 	if (fcntl(CONSTRAINT_PASSFD, F_SETFD, FD_CLOEXEC) == -1)
+-		fatal("%s fcntl F_SETFD", __func__);
++		fatal("constraint %s: unexpected file descriptor %d closure after execution (%s fcntl F_SETFD)",
++			  addr, CONSTRAINT_PASSFD, __func__);
+ 
+ 	/* Get remaining data from imsg in the unpriv child */
+ 	if (am.namelen) {
+ 		if ((cstr.addr_head.name =
+ 		    get_string(data, am.namelen)) == NULL)
+-			fatalx("invalid IMSG_CONSTRAINT_QUERY name");
++			fatalx("constraint %s: invalid name", addr);
+ 		data += am.namelen;
+ 	}
+ 	if (am.pathlen) {
+ 		if ((cstr.addr_head.path =
+ 		    get_string(data, am.pathlen)) == NULL)
+-			fatalx("invalid IMSG_CONSTRAINT_QUERY path");
++			fatalx("constraint %s: invalid path", addr);
+ 	}
+ 
+ 	/* Run! */
+ 	if ((ctx = httpsdate_query(addr,
+ 	    CONSTRAINT_PORT, cstr.addr_head.name, cstr.addr_head.path,
+ 	    conf->ca, conf->ca_len, &rectv, &xmttv)) == NULL) {
++		log_debug("constraint %s: failed to get proper time results", addr);
+ 		/* Abort with failure but without warning */
+ 		exit(1);
+ 	}
+@@ -464,7 +474,7 @@ priv_constraint_check_child(pid_t pid, i
+ 		if (WEXITSTATUS(status) != 0)
+ 			fail = 1;
+ 	} else
+-		fatalx("unexpected cause of SIGCHLD");
++		fatalx("constraint: unexpected closure in check (SIGCHLD)");
+ 
+ 	if ((cstr = constraint_bypid(pid)) != NULL) {
+ 		if (sig) {
+@@ -489,7 +499,7 @@ priv_constraint_kill(u_int32_t id)
+ 	struct constraint	*cstr;
+ 
+ 	if ((cstr = constraint_byid(id)) == NULL) {
+-		log_warnx("IMSG_CONSTRAINT_KILL for invalid id %d", id);
++		log_warnx("constraint id %d: kill failed: invalid id", id);
+ 		return;
+ 	}
+ 
+@@ -541,7 +551,7 @@ constraint_close(u_int32_t id)
+ 	struct constraint	*cstr;
+ 
+ 	if ((cstr = constraint_byid(id)) == NULL) {
+-		log_warn("%s: id %d: not found", __func__, id);
++		log_warn("constraint id %d: id not found (%s)", id, __func__);
+ 		return (0);
+ 	}
+ 
+@@ -569,7 +579,7 @@ priv_constraint_close(int fd, int fail)
+ 	u_int32_t		 id;
+ 
+ 	if ((cstr = constraint_byfd(fd)) == NULL) {
+-		log_warn("%s: fd %d: not found", __func__, fd);
++		log_warn("constraint id %d: constraint file descriptor %d not found (%s)", cstr->id, fd, __func__);
+ 		return;
+ 	}
+ 
+@@ -643,7 +653,9 @@ priv_constraint_dispatch(struct pollfd *
+ 		switch (imsg.hdr.type) {
+ 		case IMSG_CONSTRAINT_RESULT:
+ 			 if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(tv))
+-				fatalx("invalid IMSG_CONSTRAINT received");
++				fatalx("constraint id %d: invalid header length received in dispatch",
++					cstr->id
++				);
+ 
+ 			/* state is maintained by child, but we want to
+ 			   remember we've seen the result */
+@@ -669,12 +681,12 @@ constraint_msg_result(u_int32_t id, u_in
+ 	double			 offset;
+ 
+ 	if ((cstr = constraint_byid(id)) == NULL) {
+-		log_warnx("IMSG_CONSTRAINT_CLOSE with invalid constraint id");
++		log_warnx("constraint id %d: invalid constraint id in result", id);
+ 		return;
+ 	}
+ 
+ 	if (len != sizeof(tv)) {
+-		log_warnx("invalid IMSG_CONSTRAINT received");
++		log_warnx("constraint id %d: invalid header length %zu received in result", id, len);
+ 		return;
+ 	}
+ 
+@@ -683,7 +695,7 @@ constraint_msg_result(u_int32_t id, u_in
+ 	offset = gettime_from_timeval(&tv[0]) -
+ 	    gettime_from_timeval(&tv[1]);
+ 
+-	log_info("constraint reply from %s: offset %f",
++	log_info("constraint %s: reply received: offset %fs",
+ 	    log_sockaddr((struct sockaddr *)&cstr->addr->ss),
+ 	    offset);
+ 
+@@ -702,20 +714,22 @@ constraint_msg_close(u_int32_t id, u_int
+ 	static int		 total_fails;
+ 
+ 	if ((cstr = constraint_byid(id)) == NULL) {
+-		log_warnx("IMSG_CONSTRAINT_CLOSE with invalid constraint id");
++		log_warnx("constraint id %d: closure failed: invalid constraint id", id);
+ 		return;
+ 	}
+ 
+ 	if (len != sizeof(int)) {
+-		log_warnx("invalid IMSG_CONSTRAINT_CLOSE received");
++		log_warnx("constraint id %d: closure failed: invalid header length %zu received",
++				  id,
++				  len);
+ 		return;
+ 	}
+ 
+ 	memcpy(&fail, data, len);
+ 
+ 	if (fail) {
+-		log_debug("no constraint reply from %s"
+-		    " received in time, next query %ds",
++		log_debug("constraint %s: no reply"
++		    " received in time, next query in %ds",
+ 		    log_sockaddr((struct sockaddr *)
+ 		    &cstr->addr->ss), CONSTRAINT_SCAN_INTERVAL);
+ 		
+@@ -724,7 +738,7 @@ constraint_msg_close(u_int32_t id, u_int
+ 			cnt++;
+ 		if (cnt > 0 && ++total_fails >= cnt &&
+ 		    conf->constraint_median == 0) {
+-			log_warnx("constraints configured but none available");
++			log_warnx("constraint: constraints configured but none available");
+ 			total_fails = 0;
+ 		}
+ 	}
+@@ -743,21 +757,21 @@ constraint_msg_dns(u_int32_t id, u_int8_
+ 	struct ntp_addr		*h;
+ 
+ 	if ((cstr = constraint_byid(id)) == NULL) {
+-		log_debug("IMSG_CONSTRAINT_DNS with invalid constraint id");
++		log_warnx("constraint id %d: DNS dispatching failed: invalid constraint id", id);
+ 		return;
+ 	}
+ 	if (cstr->addr != NULL) {
+-		log_warnx("IMSG_CONSTRAINT_DNS but addr != NULL!");
++        log_warnx("constraint id %d: DNS dispatching failed: address is not empty", id);
+ 		return;
+ 	}
+ 	if (len == 0) {
+-		log_debug("%s FAILED", __func__);
++        log_debug("constraint id %d: DNS dispatching failed: invalid header length %zu (%s FAILED)", id, len, __func__);
+ 		cstr->state = STATE_DNS_TEMPFAIL;
+ 		return;
+ 	}
+ 
+ 	if (len % (sizeof(struct sockaddr_storage) + sizeof(int)) != 0)
+-		fatalx("IMSG_CONSTRAINT_DNS len");
++        fatalx("constraint id %d: DNS dispatching failed: invalid header length", id);
+ 
+ 	if (cstr->addr_head.pool) {
+ 		struct constraint *n, *tmp;
+@@ -772,7 +786,7 @@ constraint_msg_dns(u_int32_t id, u_int8_
+ 	p = data;
+ 	do {
+ 		if ((h = calloc(1, sizeof(*h))) == NULL)
+-			fatal("calloc ntp_addr");
++            fatal("constraint id %d: DNS dispatching failed: can't allocate memory", id);
+ 		memcpy(&h->ss, p, sizeof(h->ss));
+ 		p += sizeof(h->ss);
+ 		len -= sizeof(h->ss);
+@@ -788,7 +802,7 @@ constraint_msg_dns(u_int32_t id, u_int8_
+ 			ncstr->addr_head.path = strdup(cstr->addr_head.path);
+ 			if (ncstr->addr_head.name == NULL ||
+ 			    ncstr->addr_head.path == NULL)
+-				fatal("calloc name");
++                fatal("constraint id %d: DNS dispatching failed: invalid data", id);
+ 			ncstr->addr_head.pool = cstr->addr_head.pool;
+ 			ncstr->state = STATE_DNS_DONE;
+ 			constraint_add(ncstr);
+@@ -831,7 +845,7 @@ constraint_update(void)
+ 		return;
+ 
+ 	if ((values = calloc(cnt, sizeof(time_t))) == NULL)
+-		fatal("calloc");
++		fatal("constraint: can't allocate memory for constraint time");
+ 
+ 	i = 0;
+ 	TAILQ_FOREACH(cstr, &conf->constraints, entry) {
+@@ -979,11 +993,14 @@ httpsdate_request(struct httpsdate *http
+ 	 * does not trigger any DNS operation and is safe to be called
+ 	 * without the dns pledge.
+ 	 */
++	log_debug("constraint %s: establishing connection", httpsdate->tls_addr);
+ 	if (tls_connect_servername(httpsdate->tls_ctx, httpsdate->tls_addr,
+ 	    httpsdate->tls_port, httpsdate->tls_hostname) == -1) {
+-		log_debug("tls connect failed: %s (%s): %s",
+-		    httpsdate->tls_addr, httpsdate->tls_hostname,
+-		    tls_error(httpsdate->tls_ctx));
++		log_debug("constraint %s: TLS connection failed (%s): %s",
++		    httpsdate->tls_addr,
++			httpsdate->tls_hostname,
++		    tls_error(httpsdate->tls_ctx)
++		);
+ 		goto fail;
+ 	}
+ 
+@@ -994,9 +1011,11 @@ httpsdate_request(struct httpsdate *http
+ 		if (ret == TLS_WANT_POLLIN || ret == TLS_WANT_POLLOUT)
+ 			continue;
+ 		if (ret == -1) {
+-			log_warnx("tls write failed: %s (%s): %s",
+-			    httpsdate->tls_addr, httpsdate->tls_hostname,
+-			    tls_error(httpsdate->tls_ctx));
++			log_warnx("constraint %s: TLS write operation failed (%s): %s",
++				httpsdate->tls_addr,
++				httpsdate->tls_hostname,
++				tls_error(httpsdate->tls_ctx)
++			);
+ 			goto fail;
+ 		}
+ 		buf += ret;
+@@ -1022,7 +1041,9 @@ httpsdate_request(struct httpsdate *http
+ 		 */
+ 		if (strptime(p, IMF_FIXDATE,
+ 		    &httpsdate->tls_tm) == NULL) {
+-			log_warnx("unsupported date format");
++			log_warnx("constraint %s: unsupported date format",
++				httpsdate->tls_addr
++			);
+ 			free(line);
+ 			return (-1);
+ 		}
+@@ -1050,8 +1071,8 @@ httpsdate_request(struct httpsdate *http
+ 		if (strftime(timebuf2, sizeof(timebuf2), X509_DATE,
+ 		    &httpsdate->tls_tm) == 0)
+ 			goto fail;
+-		log_warnx("tls certificate not yet valid: %s (%s): "
+-		    "not before %s, now %s", httpsdate->tls_addr,
++		log_warnx("constraint %s: TLS certificate not yet valid (%s): "
++		    "not before %s, now is %s", httpsdate->tls_addr,
+ 		    httpsdate->tls_hostname, timebuf1, timebuf2);
+ 		goto fail;
+ 	}
+@@ -1063,8 +1084,8 @@ httpsdate_request(struct httpsdate *http
+ 		if (strftime(timebuf2, sizeof(timebuf2), X509_DATE,
+ 		    &httpsdate->tls_tm) == 0)
+ 			goto fail;
+-		log_warnx("tls certificate expired: %s (%s): "
+-		    "not after %s, now %s", httpsdate->tls_addr,
++		log_warnx("constraint %s: TLS certificate has been expired (%s): "
++		    "not after %s, now is %s", httpsdate->tls_addr,
+ 		    httpsdate->tls_hostname, timebuf1, timebuf2);
+ 		goto fail;
+ 	}
+@@ -1117,11 +1138,11 @@ tls_readline(struct tls *tls, size_t *le
+ 
+ 	len = 128;
+ 	if ((buf = malloc(len)) == NULL)
+-		fatal("Can't allocate memory for transfer buffer");
++		fatal("constraint: can't allocate memory for TLS transfer buffer");
+ 	for (i = 0; ; i++) {
+ 		if (i >= len - 1) {
+ 			if ((q = reallocarray(buf, len, 2)) == NULL)
+-				fatal("Can't expand transfer buffer");
++				fatal("constraint: can't expand TLS transfer buffer");
+ 			buf = q;
+ 			len *= 2;
+ 		}
+@@ -1136,7 +1157,7 @@ tls_readline(struct tls *tls, size_t *le
+ 		}
+ 
+ 		if (maxlength != NULL && (*maxlength)-- == 0) {
+-			log_warnx("maximum length exceeded");
++			log_warnx("constraint: maximum HTTP header length exceeded");
+ 			free(buf);
+ 			return (NULL);
+ 		}
+@@ -1147,7 +1168,7 @@ tls_readline(struct tls *tls, size_t *le
+ 	}
+ 	*lenp = i;
+ 	if (gettimeofday(when, NULL) == -1)
+-		fatal("gettimeofday");
++		fatal("constraint: can't get a valid time stamp");
+ 	return (buf);
+ }
+ 
+--- a/src/control.c	2020-08-01 00:19:21.849059080 +0300
++++ b/src/control.c	2020-07-31 23:23:56.959055574 +0300
+@@ -47,12 +47,12 @@ control_check(char *path)
+ 	strlcpy(sun.sun_path, path, sizeof(sun.sun_path));
+ 
+ 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+-		log_debug("control_check: socket check");
++		log_debug("control socket: socket error in check");
+ 		return (-1);
+ 	}
+ 
+ 	if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0) {
+-		log_debug("control_check: socket in use");
++		log_debug("control socket: socket is in use");
+ 		close(fd);
+ 		return (-1);
+ 	}
+@@ -70,7 +70,7 @@ control_init(char *path)
+ 	mode_t			 old_umask;
+ 
+ 	if ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) == -1) {
+-		log_warn("control_init: socket");
++		log_warn("control socket: can't create UDP socket");
+ 		return (-1);
+ 	}
+ 
+@@ -78,18 +78,18 @@ control_init(char *path)
+ 	sa.sun_family = AF_UNIX;
+ 	if (strlcpy(sa.sun_path, path, sizeof(sa.sun_path)) >=
+ 	    sizeof(sa.sun_path))
+-		errx(1, "ctl socket name too long");
++		errx(1, "control socket: name is too long");
+ 
+ 	if (unlink(path) == -1)
+ 		if (errno != ENOENT) {
+-			log_warn("control_init: unlink %s", path);
++			log_warn("control socket: can't unlink %s", path);
+ 			close(fd);
+ 			return (-1);
+ 		}
+ 
+ 	old_umask = umask(S_IXUSR|S_IXGRP|S_IWOTH|S_IROTH|S_IXOTH);
+ 	if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) == -1) {
+-		log_warn("control_init: bind: %s", path);
++		log_warn("control socket: can't bind %s", path);
+ 		close(fd);
+ 		umask(old_umask);
+ 		return (-1);
+@@ -97,7 +97,7 @@ control_init(char *path)
+ 	umask(old_umask);
+ 
+ 	if (chmod(path, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP) == -1) {
+-		log_warn("control_init: chmod");
++		log_warn("control socket: can't set owner permission bits for %s", path);
+ 		close(fd);
+ 		(void)unlink(path);
+ 		return (-1);
+@@ -112,7 +112,7 @@ int
+ control_listen(int fd)
+ {
+ 	if (fd != -1 && listen(fd, CONTROL_BACKLOG) == -1) {
+-		log_warn("control_listen: listen");
++		log_warn("control socket: can't initialize listening interface");
+ 		return (-1);
+ 	}
+ 
+@@ -137,14 +137,14 @@ control_accept(int listenfd)
+ 	if ((connfd = accept(listenfd,
+ 	    (struct sockaddr *)&sa, &len)) == -1) {
+ 		if (errno != EWOULDBLOCK && errno != EINTR)
+-			log_warn("control_accept: accept");
++			log_warn("control socket: unable to accept connections");
+ 		return (0);
+ 	}
+ 
+ 	session_socket_nonblockmode(connfd);
+ 
+ 	if ((ctl_conn = calloc(1, sizeof(struct ctl_conn))) == NULL) {
+-		log_warn("control_accept");
++		log_warn("control socket: can't allocate memory for NTP server");
+ 		close(connfd);
+ 		return (0);
+ 	}
+@@ -175,7 +175,7 @@ control_close(int fd)
+ 	struct ctl_conn	*c;
+ 
+ 	if ((c = control_connbyfd(fd)) == NULL) {
+-		log_warn("control_close: fd %d: not found", fd);
++		log_warn("control socket: file descriptor %d not found while closing", fd);
+ 		return (0);
+ 	}
+ 
+@@ -202,7 +202,7 @@ control_dispatch_msg(struct pollfd *pfd,
+ 	ssize_t			 n;
+ 
+ 	if ((c = control_connbyfd(pfd->fd)) == NULL) {
+-		log_warn("control_dispatch_msg: fd %d: not found", pfd->fd);
++		log_warn("control socket: file descriptor %d not found while preparing NTP server subprocess", pfd->fd);
+ 		return (0);
+ 	}
+ 
+@@ -298,12 +298,12 @@ session_socket_nonblockmode(int fd)
+ 	int	flags;
+ 
+ 	if ((flags = fcntl(fd, F_GETFL)) == -1)
+-		fatal("fcntl F_GETFL");
++		fatal("control socket: unable to get file descriptor %d status flags", fd);
+ 
+ 	flags |= O_NONBLOCK;
+ 
+ 	if ((flags = fcntl(fd, F_SETFL, flags)) == -1)
+-		fatal("fcntl F_SETFL");
++		fatal("control socket: unable to set file descriptor %d status flags", fd);
+ }
+ 
+ void
+@@ -349,7 +349,7 @@ build_show_peer(struct ctl_show_peer *cp
+ 	if (p->addr) {
+ 		a = log_sockaddr((struct sockaddr *)&p->addr->ss);
+ 		if (p->addr->notauth)
+-			auth = " (non-dnssec lookup)";
++			auth = " (non-DNSSEC lookup)";
+ 	}
+ 	if (p->addr_head.pool)
+ 		pool = "from pool ";
+--- a/src/ntp.c	2020-08-01 00:19:21.849059080 +0300
++++ b/src/ntp.c	2020-07-31 23:34:32.462389577 +0300
+@@ -93,38 +93,38 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 
+ 	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNSPEC,
+ 	    pipe_dns) == -1)
+-		fatal("socketpair");
++		fatal("main process: can't set socket pair for DNS");
+ 
+ 	start_child(NTPDNS_PROC_NAME, pipe_dns[1], argc, argv);
+ 
+ 	log_init(nconf->debug ? LOG_TO_STDERR : LOG_TO_SYSLOG, nconf->verbose,
+ 	    LOG_DAEMON);
+ 	if (!nconf->debug && setsid() == -1)
+-		fatal("setsid");
+-	log_procinit("ntp");
++		fatal("main process: can't create a new session");
++	log_procinit("NTP");
+ 
+ 	if ((se = getservbyname("ntp", "udp")) == NULL)
+-		fatal("getservbyname");
++		fatal("main process: can't find default system information for NTP protocol (getservbyname)");
+ 
+ 	/* Start control socket. */
+ 	if ((fd_ctl = control_init(CTLSOCKET)) == -1)
+-		fatalx("control socket init failed");
++		fatalx("control socket: unable to initialize");
+ 	if (control_listen(fd_ctl) == -1)
+-		fatalx("control socket listen failed");
++		fatalx("control socket: unable to listen");
+ 	if ((nullfd = open("/dev/null", O_RDWR, 0)) == -1)
+-		fatal(NULL);
++		fatal("control socket: can't read /dev/null");
+ 
+ 	if (stat(pw->pw_dir, &stb) == -1) {
+-		fatal("privsep dir %s could not be opened", pw->pw_dir);
++		fatal("main process: can't open working directory %s", pw->pw_dir);
+ 	}
+ 	if (stb.st_uid != 0 || (stb.st_mode & (S_IWGRP|S_IWOTH)) != 0) {
+-		fatalx("bad privsep dir %s permissions: %o",
++		fatalx("main process: working directory %s has bad permissions (%o)",
+ 		    pw->pw_dir, stb.st_mode);
+ 	}
+ 	if (chroot(pw->pw_dir) == -1)
+-		fatal("chroot");
++		fatal("main process: can't set isolated working directory");
+ 	if (chdir("/") == -1)
+-		fatal("chdir(\"/\")");
++		fatal("main process: can't change subprocess working directory");
+ 
+ 	if (!nconf->debug) {
+ 		dup2(nullfd, STDIN_FILENO);
+@@ -133,21 +133,22 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 	}
+ 	close(nullfd);
+ 
+-	setproctitle("ntp engine");
++	setproctitle("NTP engine");
+ 
+ 	conf = nconf;
+ 	setup_listeners(se, conf, &listener_cnt);
++	log_debug("main process: setting up listeners");
+ 
+ 	if (setgroups(1, &pw->pw_gid) ||
+ 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+ 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+-		fatal("can't drop privileges");
++		fatal("main process: can't drop privileges");
+ 
+ 	endservent();
+ 
+ 	/* The ntp process will want to open NTP client sockets -> "inet" */
+ 	if (pledge("stdio inet", NULL) == -1)
+-		err(1, "pledge");
++		err(1, "main process: can't restrict NTP process privileges");
+ 
+ 	signal(SIGTERM, ntp_sighdlr);
+ 	signal(SIGINT, ntp_sighdlr);
+@@ -156,10 +157,10 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 	signal(SIGCHLD, SIG_DFL);
+ 
+ 	if ((ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
+-		fatal(NULL);
++		fatal("main process: can't allocate memory for main data buffer");
+ 	imsg_init(ibuf_main, PARENT_SOCK_FILENO);
+ 	if ((ibuf_dns = malloc(sizeof(struct imsgbuf))) == NULL)
+-		fatal(NULL);
++		fatal("main process: can't allocate memory for DNS data buffer");
+ 	imsg_init(ibuf_dns, pipe_dns[0]);
+ 
+ 	constraint_cnt = 0;
+@@ -192,7 +193,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 	TAILQ_INIT(&ctl_conns);
+ 	sensor_init();
+ 
+-	log_info("ntp engine ready");
++	log_info("NTP engine ready");
+ 
+ 	ctl_cnt = 0;
+ 	peer_cnt = 0;
+@@ -204,7 +205,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 			if ((newp = reallocarray(idx2peer, peer_cnt,
+ 			    sizeof(*idx2peer))) == NULL) {
+ 				/* panic for now */
+-				log_warn("could not resize idx2peer from %u -> "
++				log_warn("main process: could not resize server pool from %u -> "
+ 				    "%u entries", idx2peer_elms, peer_cnt);
+ 				fatalx("exiting");
+ 			}
+@@ -218,7 +219,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 			if ((newp = reallocarray(pfd, new_cnt,
+ 			    sizeof(*pfd))) == NULL) {
+ 				/* panic for now */
+-				log_warn("could not resize pfd from %u -> "
++				log_warn("main process: could not resize process file descriptor pool from %u -> "
+ 				    "%u entries", pfd_elms, new_cnt);
+ 				fatalx("exiting");
+ 			}
+@@ -258,12 +259,12 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 			}
+ 			if (p->deadline > 0 && p->deadline <= getmonotime()) {
+ 				timeout = 300;
+-				log_debug("no reply from %s received in time, "
+-				    "next query %ds", log_sockaddr(
++				log_debug("NTP client: NTP peer %s - no reply received in time, "
++				    "next query in %ds", log_sockaddr(
+ 				    (struct sockaddr *)&p->addr->ss), timeout);
+ 				if (p->trustlevel >= TRUSTLEVEL_BADPEER &&
+ 				    (p->trustlevel /= 2) < TRUSTLEVEL_BADPEER)
+-					log_info("peer %s now invalid",
++					log_info("NTP client: NTP peer %s is invalid now",
+ 					    log_sockaddr(
+ 					    (struct sockaddr *)&p->addr->ss));
+ 				if (client_nextaddr(p) == 1) {
+@@ -273,8 +274,8 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 				set_next(p, timeout);
+ 			}
+ 			if (p->senderrors > MAX_SEND_ERRORS) {
+-				log_debug("failed to send query to %s, "
+-				    "next query %ds", log_sockaddr(
++				log_debug("NTP client: NTP peer %s - failed to send query, "
++				    "next query in %ds", log_sockaddr(
+ 				    (struct sockaddr *)&p->addr->ss),
+ 				    INTERVAL_QUERY_PATHETIC);
+ 				p->senderrors = 0;
+@@ -323,7 +324,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 		if (conf->settime &&
+ 		    ((trial_cnt > 0 && sent_cnt == 0) ||
+ 		    (peer_cnt == 0 && sensors_cnt == 0)))
+-			priv_settime(0, "no valid peers configured");
++			priv_settime(0, "NTP client: no valid peers configured");
+ 
+ 		TAILQ_FOREACH(cstr, &conf->constraints, entry) {
+ 			if (constraint_query(cstr) == -1)
+@@ -351,21 +352,21 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 
+ 		if ((nfds = poll(pfd, i, timeout ? timeout * 1000 : 1)) == -1)
+ 			if (errno != EINTR) {
+-				log_warn("poll error");
++				log_warn("file descriptor: poll error");
+ 				ntp_quit = 1;
+ 			}
+ 
+ 		if (nfds > 0 && (pfd[PFD_PIPE_MAIN].revents & POLLOUT))
+ 			if (msgbuf_write(&ibuf_main->w) <= 0 &&
+ 			    errno != EAGAIN) {
+-				log_warn("pipe write error (to parent)");
++				log_warn("file descriptor: pipe write error (to parent)");
+ 				ntp_quit = 1;
+ 			}
+ 
+ 		if (nfds > 0 && pfd[PFD_PIPE_MAIN].revents & (POLLIN|POLLERR)) {
+ 			nfds--;
+ 			if (ntp_dispatch_imsg() == -1) {
+-				log_debug("pipe read error (from main)");
++				log_warn("file descriptor: pipe write error (from main)");
+ 				ntp_quit = 1;
+ 			}
+ 		}
+@@ -373,14 +374,14 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 		if (nfds > 0 && (pfd[PFD_PIPE_DNS].revents & POLLOUT))
+ 			if (msgbuf_write(&ibuf_dns->w) <= 0 &&
+ 			    errno != EAGAIN) {
+-				log_warn("pipe write error (to dns engine)");
++				log_warn("file descriptor: pipe write error (to DNS engine)");
+ 				ntp_quit = 1;
+ 			}
+ 
+ 		if (nfds > 0 && pfd[PFD_PIPE_DNS].revents & (POLLIN|POLLERR)) {
+ 			nfds--;
+ 			if (ntp_dispatch_imsg_dns() == -1) {
+-				log_warn("pipe read error (from dns engine)");
++				log_warn("file descriptor: pipe write error (from DNS engine)");
+ 				ntp_quit = 1;
+ 			}
+ 		}
+@@ -394,7 +395,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 			if (pfd[j].revents & (POLLIN|POLLERR)) {
+ 				nfds--;
+ 				if (server_dispatch(pfd[j].fd, conf) == -1) {
+-					log_warn("pipe write error (conf)");
++					log_warn("file descriptor: pipe write error (in configuration)");
+ 					ntp_quit = 1;
+ 				}
+ 			}
+@@ -404,7 +405,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 				nfds--;
+ 				if (client_dispatch(idx2peer[j - idx_peers],
+ 				    conf->settime, conf->automatic) == -1) {
+-					log_warn("pipe write error (settime)");
++					log_warn("file descriptor: pipe write error (in settime)");
+ 					ntp_quit = 1;
+ 				}
+ 			}
+@@ -429,7 +430,7 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 	msgbuf_clear(&ibuf_dns->w);
+ 	free(ibuf_dns);
+ 
+-	log_info("ntp engine exiting");
++	log_info("NTP engine exiting");
+ 	exit(0);
+ }
+ 
+@@ -453,12 +454,12 @@ ntp_dispatch_imsg(void)
+ 		case IMSG_ADJTIME:
+ 			memcpy(&n, imsg.data, sizeof(n));
+ 			if (n == 1 && !conf->status.synced) {
+-				log_info("clock is now synced");
++				log_info("main process: clock is synced now");
+ 				conf->status.synced = 1;
+ 				priv_dns(IMSG_SYNCED, NULL, 0);
+ 				constraint_reset();
+ 			} else if (n == 0 && conf->status.synced) {
+-				log_info("clock is now unsynced");
++				log_info("main process: clock is unsynced now");
+ 				conf->status.synced = 0;
+ 				priv_dns(IMSG_UNSYNCED, NULL, 0);
+ 			}
+@@ -529,11 +530,11 @@ ntp_dispatch_imsg_dns(void)
+ 				if (peer->id == imsg.hdr.peerid)
+ 					break;
+ 			if (peer == NULL) {
+-				log_warnx("IMSG_HOST_DNS with invalid peerID");
++				log_warnx("NTP client: invalid NTP peer ID retrieved in DNS dispatch initialization");
+ 				break;
+ 			}
+ 			if (peer->addr != NULL) {
+-				log_warnx("IMSG_HOST_DNS but addr != NULL!");
++				log_warnx("NTP client: invalid NTP peer ID retrieved in DNS dispatch initialization");
+ 				break;
+ 			}
+ 
+@@ -556,10 +557,10 @@ ntp_dispatch_imsg_dns(void)
+ 
+ 			dlen = imsg.hdr.len - IMSG_HEADER_SIZE;
+ 			if (dlen == 0) {	/* no data -> temp error */
+-				log_warnx("DNS lookup tempfail");
++				log_warnx("DNS lookup temporary failed");
+ 				peer->state = STATE_DNS_TEMPFAIL;
+ 				if (conf->tmpfail++ == TRIES_AUTO_DNSFAIL)
+-					priv_settime(0, "of dns failures");
++					priv_settime(0, "of DNS failures");
+ 				break;
+ 			}
+ 
+@@ -571,7 +572,7 @@ ntp_dispatch_imsg_dns(void)
+ 			    sizeof(int)) {
+ 				if ((h = calloc(1, sizeof(struct ntp_addr))) ==
+ 				    NULL)
+-					fatal(NULL);
++					fatal("NTP client: can't allocate memory for NTP peer address");
+ 				memcpy(&h->ss, p, sizeof(h->ss));
+ 				p += sizeof(h->ss);
+ 				dlen -= sizeof(h->ss);
+@@ -588,7 +589,7 @@ ntp_dispatch_imsg_dns(void)
+ 						free(h);
+ 						continue;
+ 					}
+-					log_debug("Adding address %s to %s",
++					log_debug("NTP client: adding address %s to %s",
+ 					    log_sockaddr((struct sockaddr *)
+ 					    &h->ss), peer->addr_head.name);
+ 					npeer = new_peer();
+@@ -614,7 +615,7 @@ ntp_dispatch_imsg_dns(void)
+ 				}
+ 			}
+ 			if (dlen != 0)
+-				fatalx("IMSG_HOST_DNS: dlen != 0");
++				fatalx("NTP client: didn't expect data for stored NTP peer network address in DNS dispatch initialization");
+ 			if (peer->addr_head.pool)
+ 				peer_remove(peer);
+ 			else
+@@ -627,10 +628,10 @@ ntp_dispatch_imsg_dns(void)
+ 		case IMSG_PROBE_ROOT:
+ 			dlen = imsg.hdr.len - IMSG_HEADER_SIZE;
+ 			if (dlen != sizeof(int))
+-				fatalx("IMSG_PROBE_ROOT");
++				fatalx("NTP client: invalid header length in data buffer for DNS probe");
+ 			memcpy(&n, imsg.data, sizeof(int));
+ 			if (n < 0)
+-				priv_settime(0, "dns probe failed");
++				priv_settime(0, "NTP client: DNS probe failed");
+ 			break;
+ 		default:
+ 			break;
+@@ -738,7 +739,7 @@ priv_adjtime(void)
+ 		return (1);
+ 
+ 	if ((offsets = calloc(offset_cnt, sizeof(struct ntp_offset *))) == NULL)
+-		fatal("calloc priv_adjtime");
++		fatal("main process: can't allocate memory for time adjustment");
+ 
+ 	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
+ 		if (p->trustlevel < TRUSTLEVEL_BADPEER)
+@@ -815,7 +816,7 @@ void
+ priv_settime(double offset, char *msg)
+ {
+ 	if (offset == 0)
+-		log_info("cancel settime because %s", msg);
++		log_info("NTP client: setting time was cancelled because %s", msg);
+ 	imsg_compose(ibuf_main, IMSG_SETTIME, 0, 0, -1,
+ 	    &offset, sizeof(offset));
+ 	conf->settime = 0;
+--- a/src/ntpd.c	2020-08-01 00:19:23.455725749 +0300
++++ b/src/ntpd.c	2020-08-01 13:33:10.798104786 +0300
+@@ -102,7 +102,7 @@ writepid(struct ntpd_conf *lconf)
+ 	if (lconf->pid_file != NULL) {
+ 		FILE *f = fopen(lconf->pid_file, "w");
+ 		if (f == NULL)
+-			fatal("couldn't open pid file");
++			fatal("main process: couldn't open pid file");
+ 		fprintf(f, "%ld\n", (long) getpid());
+ 		fclose(f);
+ 	}
+@@ -131,7 +131,7 @@ auto_preconditions(const struct ntpd_con
+ 	int mib[2] = { CTL_KERN, KERN_SECURELVL };
+ 	size_t sz = sizeof(int);
+ 	if (sysctl(mib, 2, &securelevel, &sz, NULL, 0) == -1)
+-		err(1, "sysctl");
++		err(1, "error while processing kernel security level");
+ #endif
+ 	constraints = !TAILQ_EMPTY(&cnf->constraints);
+ 	return !cnf->settime && (constraints || cnf->trusted_peers ||
+@@ -244,15 +244,15 @@ main(int argc, char *argv[])
+ 		exit(1);
+ 
+ 	if (lconf.noaction) {
+-		fprintf(stderr, "configuration OK\n");
++		fprintf(stderr, "main process: configuration OK\n");
+ 		exit(0);
+ 	}
+ 
+ 	if (geteuid())
+-		errx(1, "need root privileges");
++		errx(1, "main process: need root privileges");
+ 
+ 	if ((pw = getpwnam(NTPD_USER)) == NULL)
+-		errx(1, "unknown user %s", NTPD_USER);
++		errx(1, "main process: unknown user %s", NTPD_USER);
+ 
+ 	lconf.automatic = auto_preconditions(&lconf);
+ 	if (lconf.automatic)
+@@ -261,7 +261,7 @@ main(int argc, char *argv[])
+ 	if (pname != NULL) {
+ 		/* Remove our proc arguments, so child doesn't need to. */
+ 		if (sanitize_argv(&argc0, &argv0) == -1)
+-			fatalx("sanitize_argv");
++			fatalx("main process: can't sanitize environment for subprocesses");
+ 
+ 		if (strcmp(NTP_PROC_NAME, pname) == 0)
+ 			ntp_main(&lconf, pw, argc0, argv0);
+@@ -271,17 +271,16 @@ main(int argc, char *argv[])
+ 			priv_constraint_child(pw->pw_dir, pw->pw_uid,
+ 			    pw->pw_gid);
+ 		else
+-			fatalx("%s: invalid process name '%s'", __func__,
+-			    pname);
++			fatalx("main process: invalid process name '%s' (%s)", pname, __func__);
+ 
+-		fatalx("%s: process '%s' failed", __func__, pname);
++		fatalx("main process: process '%s' failed (%s)", pname, __func__);
+ 	} else {
+ 		if ((control_check(CTLSOCKET)) == -1)
+-			fatalx("ntpd already running");
++			fatalx("OpenNTPD is already running");
+ 	}
+ 
+ 	if (setpriority(PRIO_PROCESS, 0, -20) == -1)
+-		warn("can't set priority");
++		warn("main process: can't set priority");
+ 	reset_adjtime();
+ 
+ 	logdest = lconf.debug ? LOG_TO_STDERR : LOG_TO_SYSLOG;
+@@ -289,7 +288,7 @@ main(int argc, char *argv[])
+ 		log_init(logdest, lconf.verbose, LOG_DAEMON);
+ 		if (!lconf.debug) {
+ 			if (daemon(1, 0))
+-				fatal("daemon");
++				fatal("main process: can't daemonize process");
+ 			writepid(&lconf);
+ 		}
+ 	} else {
+@@ -299,10 +298,10 @@ main(int argc, char *argv[])
+ 
+ 	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNSPEC,
+ 	    pipe_chld) == -1)
+-		fatal("socketpair");
++		fatal("main process: can't set socket pair for child processes");
+ 
+ 	if (chdir("/") == -1)
+-		fatal("chdir(\"/\")");
++		fatal("main process: can't change working directory");
+ 
+ 	signal(SIGCHLD, sighdlr);
+ 
+@@ -319,7 +318,7 @@ main(int argc, char *argv[])
+ 	constraint_purge();
+ 
+ 	if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
+-		fatal(NULL);
++		fatal("main process: can't allocate memory for data buffer");
+ 	imsg_init(ibuf, pipe_chld[0]);
+ 
+ 	constraint_cnt = 0;
+@@ -329,11 +328,11 @@ main(int argc, char *argv[])
+ 	 * then privdrop into chroot before speaking to the outside world.
+ 	 */
+ 	if (unveil(tls_default_ca_cert_file(), "r") == -1)
+-		err(1, "unveil");
++		err(1, "main process: can't unveil certificate file for reading");
+ 	if (unveil("/usr/sbin/ntpd", "x") == -1)
+-		err(1, "unveil");
++		err(1, "main process: can't unveil ntpd executable for execute operations");
+ 	if (pledge("stdio rpath inet settime proc exec id", NULL) == -1)
+-		err(1, "pledge");
++		err(1, "main process: can't restrict privileges for constraints");
+ 
+ 	while (quit == 0) {
+ 		new_cnt = PFD_MAX + constraint_cnt;
+@@ -341,7 +340,7 @@ main(int argc, char *argv[])
+ 			if ((newp = reallocarray(pfd, new_cnt,
+ 			    sizeof(*pfd))) == NULL) {
+ 				/* panic for now */
+-				log_warn("could not resize pfd from %u -> "
++				log_warn("main process: could not resize pfd from %u -> "
+ 				    "%u entries", pfd_elms, new_cnt);
+ 				fatalx("exiting");
+ 			}
+@@ -364,7 +363,7 @@ main(int argc, char *argv[])
+ 
+ 		if ((nfds = poll(pfd, i, timeout)) == -1)
+ 			if (errno != EINTR) {
+-				log_warn("poll error");
++				log_warn("file descriptor: poll error");
+ 				quit = 1;
+ 			}
+ 
+@@ -373,18 +372,18 @@ main(int argc, char *argv[])
+ 			lconf.settime = 0;
+ 			timeout = INFTIM;
+ 			log_init(logdest, lconf.verbose, LOG_DAEMON);
+-			log_warnx("no reply received in time, skipping initial "
+-			    "time setting");
++			log_warnx("main process: no reply received in time, skipping initial "
++			    "time setting for constraint");
+ 			if (!lconf.debug) {
+ 				if (daemon(1, 0))
+-					fatal("daemon");
++					fatal("main process: can't daemonize process");
+ 				writepid(&lconf);
+ 			}
+ 		}
+ 
+ 		if (nfds > 0 && (pfd[PFD_PIPE].revents & POLLOUT))
+ 			if (msgbuf_write(&ibuf->w) <= 0 && errno != EAGAIN) {
+-				log_warn("pipe write error (to child)");
++				log_warn("file descriptor: pipe write error (to child)");
+ 				quit = 1;
+ 			}
+ 
+@@ -412,7 +411,7 @@ main(int argc, char *argv[])
+ 	do {
+ 		if ((pid = wait(NULL)) == -1 &&
+ 		    errno != EINTR && errno != ECHILD)
+-			fatal("wait");
++			fatal("main process: can't get child process ID");
+ 	} while (pid != -1 || (pid == -1 && errno == EINTR));
+ 
+ 	msgbuf_clear(&ibuf->w);
+@@ -458,7 +457,7 @@ dispatch_imsg(struct ntpd_conf *lconf, i
+ 		switch (imsg.hdr.type) {
+ 		case IMSG_ADJTIME:
+ 			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(d))
+-				fatalx("invalid IMSG_ADJTIME received");
++				fatalx("main process: invalid stored data for time adjustment");
+ 			memcpy(&d, imsg.data, sizeof(d));
+ 			n = ntpd_adjtime(d);
+ 			imsg_compose(ibuf, IMSG_ADJTIME, 0, 0, -1,
+@@ -466,13 +465,13 @@ dispatch_imsg(struct ntpd_conf *lconf, i
+ 			break;
+ 		case IMSG_ADJFREQ:
+ 			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(d))
+-				fatalx("invalid IMSG_ADJFREQ received");
++				fatalx("main process: invalid stored data for frequency adjustment");
+ 			memcpy(&d, imsg.data, sizeof(d));
+ 			ntpd_adjfreq(d, 1);
+ 			break;
+ 		case IMSG_SETTIME:
+ 			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(d))
+-				fatalx("invalid IMSG_SETTIME received");
++				fatalx("main process: invalid stored data for setting time");
+ 			if (!lconf->settime)
+ 				break;
+ 			log_init(lconf->debug ? LOG_TO_STDERR : LOG_TO_SYSLOG,
+@@ -482,7 +481,7 @@ dispatch_imsg(struct ntpd_conf *lconf, i
+ 			/* daemonize now */
+ 			if (!lconf->debug) {
+ 				if (daemon(1, 0))
+-					fatal("daemon");
++					fatal("main process: can't daemonize process");
+ 				writepid(lconf);
+ 			}
+ 			lconf->settime = 0;
+@@ -511,7 +510,7 @@ reset_adjtime(void)
+ 
+ 	timerclear(&tv);
+ 	if (adjtime(&tv, NULL) == -1)
+-		log_warn("reset adjtime failed");
++		log_warn("main process: time adjustment reset failed");
+ }
+ 
+ int
+@@ -523,9 +522,9 @@ ntpd_adjtime(double d)
+ 
+ 	d += getoffset();
+ 	if (d >= threshold || d <= -1 * threshold)
+-		log_info("adjusting local clock by %fs", d);
++		log_info("main process: adjusting local clock by %fs", d);
+ 	else
+-		log_debug("adjusting local clock by %fs", d);
++		log_debug("main process: adjusting local clock by %fs", d);
+ 
+ #ifdef HAVE_ADJTIMEX
+ 	int rc;
+@@ -541,9 +540,9 @@ ntpd_adjtime(double d)
+ 
+ 	if (rc == TIME_ERROR) {
+ 		if ((tx.status & ~STA_UNSYNC))
+-			log_warn("adjtimex returned TIME_ERROR");
++			log_warn("main process: time adjustment failed due to time error");
+ 	} else if (rc < 0) {
+-		log_warn("adjtimex failed");
++		log_warn("main process: time adjustment failed");
+ 	} else if (!firstadj && tx.offset == offset) {
+ 		synced = 1;
+ 	}
+@@ -551,7 +550,7 @@ ntpd_adjtime(double d)
+ 	struct timeval	tv, olddelta;
+ 	d_to_tv(d, &tv);
+ 	if (adjtime(&tv, &olddelta) == -1)
+-		log_warn("adjtime failed");
++		log_warn("main process: time adjustment failed");
+ 	else if (!firstadj && olddelta.tv_sec == 0 && olddelta.tv_usec == 0)
+ 		synced = 1;
+ #endif
+@@ -568,7 +567,7 @@ ntpd_adjfreq(double relfreq, int wrlog)
+ 	int r;
+ 
+ 	if (adjfreq(NULL, &curfreq) == -1) {
+-		log_warn("adjfreq failed");
++		log_warn("main process: frequency adjustment failed");
+ 		return;
+ 	}
+ 
+@@ -582,17 +581,17 @@ ntpd_adjfreq(double relfreq, int wrlog)
+ 	if (wrlog) {
+ 		if (ppmfreq >= LOG_NEGLIGIBLE_ADJFREQ ||
+ 		    ppmfreq <= -LOG_NEGLIGIBLE_ADJFREQ)
+-			log_info("adjusting clock frequency by %f to %fppm%s",
++			log_info("main process: adjusting clock frequency by %f to %f ppm%s",
+ 			    ppmfreq, curfreq / 1e3 / (1LL << 32),
+ 			    r ? "" : " (no drift file)");
+ 		else
+-			log_debug("adjusting clock frequency by %f to %fppm%s",
++			log_debug("main process: adjusting clock frequency by %f to %f ppm%s",
+ 			    ppmfreq, curfreq / 1e3 / (1LL << 32),
+ 			    r ? "" : " (no drift file)");
+ 	}
+ 
+ 	if (adjfreq(&curfreq, NULL) == -1)
+-		log_warn("adjfreq failed");
++		log_warn("main process: frequency adjustment failed");
+ }
+ 
+ void
+@@ -606,7 +605,7 @@ ntpd_settime(double d)
+ 		return;
+ 
+ 	if (gettimeofday(&curtime, NULL) == -1) {
+-		log_warn("gettimeofday");
++		log_warn("main process: can't get current time");
+ 		return;
+ 	}
+ 	d_to_tv(d, &tv);
+@@ -615,13 +614,13 @@ ntpd_settime(double d)
+ 	curtime.tv_usec %= 1000000;
+ 
+ 	if (settimeofday(&curtime, NULL) == -1) {
+-		log_warn("settimeofday");
++		log_warn("main process: can't set time");
+ 		return;
+ 	}
+ 	tval = curtime.tv_sec;
+ 	strftime(buf, sizeof(buf), "%a %b %e %H:%M:%S %Z %Y",
+ 	    localtime(&tval));
+-	log_info("set local clock to %s (offset %fs)", buf, d);
++	log_info("main process: set local clock to %s (offset %fs)", buf, d);
+ }
+ 
+ static FILE *freqfp;
+@@ -635,10 +634,10 @@ readfreq(void)
+ 
+ 	fd = open(DRIFTFILE, O_RDWR);
+ 	if (fd == -1) {
+-		log_warnx("creating new %s", DRIFTFILE);
++		log_warnx("main process: creating new drift file %s", DRIFTFILE);
+ 		current = 0;
+ 		if (adjfreq(&current, NULL) == -1)
+-			log_warn("adjfreq reset failed");
++			log_warn("main process: frequency reset failed");
+ 		freqfp = fopen(DRIFTFILE, "w");
+ 		return;
+ 	}
+@@ -647,13 +646,13 @@ readfreq(void)
+ 
+ 	/* if we're adjusting frequency already, don't override */
+ 	if (adjfreq(NULL, &current) == -1)
+-		log_warn("adjfreq failed");
++		log_warn("main process: frequency adjustment failed");
+ 	else if (current == 0 && freqfp) {
+ 		if (fscanf(freqfp, "%lf", &d) == 1) {
+ 			d /= 1e6;	/* scale from ppm */
+ 			ntpd_adjfreq(d, 0);
+ 		} else
+-			log_warnx("%s is empty", DRIFTFILE);
++			log_warnx("main process: drift file %s is empty", DRIFTFILE);
+ 	}
+ }
+ 
+@@ -670,7 +669,7 @@ writefreq(double d)
+ 	r = fprintf(freqfp, "%.3f\n", d * 1e6);	/* scale to ppm */
+ 	if (r < 0 || fflush(freqfp) != 0) {
+ 		if (warnonce) {
+-			log_warnx("can't write %s", DRIFTFILE);
++			log_warnx("main process: can't write drift file %s", DRIFTFILE);
+ 			warnonce = 0;
+ 		}
+ 		clearerr(freqfp);
+@@ -678,7 +677,7 @@ writefreq(double d)
+ 	}
+         off = ftello(freqfp);
+         if (off == -1 || ftruncate(fileno(freqfp), off) == -1)
+-                log_warnx("can't truncate %s", DRIFTFILE);
++                log_warnx("main process: can't truncate drift file %s", DRIFTFILE);
+         fsync(fileno(freqfp));
+ 	return 1;
+ }
+@@ -704,7 +703,7 @@ ctl_main(int argc, char *argv[])
+ 		case 's':
+ 			showopt = ctl_lookup_option(optarg, ctl_showopt_list);
+ 			if (showopt == NULL) {
+-				warnx("Unknown show modifier '%s'", optarg);
++				warnx("control socket: unknown show modifier '%s'", optarg);
+ 				usage();
+ 			}
+ 			break;
+@@ -736,18 +735,18 @@ ctl_main(int argc, char *argv[])
+ 		/* NOTREACHED */
+ 
+ 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+-		err(1, "ntpctl: socket");
++		err(1, "ntpctl: socket error");
+ 
+ 	memset(&sa, 0, sizeof(sa));
+ 	sa.sun_family = AF_UNIX;
+ 	if (strlcpy(sa.sun_path, sockname, sizeof(sa.sun_path)) >=
+ 	    sizeof(sa.sun_path))
+-		errx(1, "ctl socket name too long");
++		errx(1, "ntpctl: control socket name is too long");
+ 	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == -1)
+-		err(1, "connect: %s", sockname);
++		err(1, "ntpctl: failed to connect to socket %s", sockname);
+ 
+ 	if (pledge("stdio", NULL) == -1)
+-		err(1, "pledge");
++		err(1, "ntpctl: can't restrict privileges");
+ 
+ 	if ((ibuf_ctl = malloc(sizeof(struct imsgbuf))) == NULL)
+ 		err(1, NULL);
+@@ -771,24 +770,24 @@ ctl_main(int argc, char *argv[])
+ 		    0, 0, -1, NULL, 0);
+ 		break;
+ 	default:
+-		errx(1, "invalid action");
++		errx(1, "ntpctl: invalid action");
+ 		break; /* NOTREACHED */
+ 	}
+ 
+ 	while (ibuf_ctl->w.queued)
+ 		if (msgbuf_write(&ibuf_ctl->w) <= 0 && errno != EAGAIN)
+-			err(1, "ibuf_ctl: msgbuf_write error");
++			err(1, "ntpctl: stored control message buffer data: write error");
+ 
+ 	done = 0;
+ 	while (!done) {
+ 		if ((n = imsg_read(ibuf_ctl)) == -1 && errno != EAGAIN)
+-			err(1, "ibuf_ctl: imsg_read error");
++			err(1, "ntpctl: stored control message buffer data: read error");
+ 		if (n == 0)
+ 			errx(1, "ntpctl: pipe closed");
+ 
+ 		while (!done) {
+ 			if ((n = imsg_get(ibuf_ctl, &imsg)) == -1)
+-				err(1, "ibuf_ctl: imsg_get error");
++				err(1, "ntpctl: stored control message buffer data: get error");
+ 			if (n == 0)
+ 				break;
+ 
+@@ -853,7 +852,7 @@ ctl_lookup_option(char *cmd, const char
+ 				if (item == NULL)
+ 					item = *list;
+ 				else
+-					errx(1, "%s is ambiguous", cmd);
++					errx(1, "ntpctl: optional argument %s is ambiguous", cmd);
+ 			}
+ 	return (item);
+ }
+@@ -866,16 +865,17 @@ show_status_msg(struct imsg *imsg)
+ 	struct timeval		 tv;
+ 
+ 	if (imsg->hdr.len != IMSG_HEADER_SIZE + sizeof(struct ctl_show_status))
+-		fatalx("invalid IMSG_CTL_SHOW_STATUS received");
++		fatalx("ntpctl: invalid control socket data size for status check");
+ 
+ 	cstatus = (struct ctl_show_status *)imsg->data;
+ 
++	printf("ntpctl: ");
+ 	if (cstatus->peercnt > 0)
+-		printf("%d/%d peers valid, ",
++		printf("%d/%d peers are valid, ",
+ 		    cstatus->valid_peers, cstatus->peercnt);
+ 
+ 	if (cstatus->sensorcnt > 0)
+-		printf("%d/%d sensors valid, ",
++		printf("%d/%d sensors are valid, ",
+ 		    cstatus->valid_sensors, cstatus->sensorcnt);
+ 
+ 	if (cstatus->constraint_median) {
+@@ -895,9 +895,9 @@ show_status_msg(struct imsg *imsg)
+ 		printf("no peers and no sensors configured\n");
+ 
+ 	if (cstatus->synced == 1)
+-		printf("clock synced, stratum %u\n", cstatus->stratum);
++		printf("clock is synced, stratum %u\n", cstatus->stratum);
+ 	else {
+-		printf("clock unsynced");
++		printf("clock is unsynced");
+ 		clock_offset = cstatus->clock_offset < 0 ?
+ 		    -1.0 * cstatus->clock_offset : cstatus->clock_offset;
+ 		if (clock_offset > 5e-7)
+@@ -918,20 +918,20 @@ show_peer_msg(struct imsg *imsg, int cal
+ 
+ 	if (imsg->hdr.type == IMSG_CTL_SHOW_PEERS_END) {
+ 		if (imsg->hdr.len != IMSG_HEADER_SIZE + sizeof(cnt))
+-			fatalx("invalid IMSG_CTL_SHOW_PEERS_END received");
++			fatalx("ntpctl: invalid control socket data size for a NTP peer end check");
+ 		memcpy(&cnt, imsg->data, sizeof(cnt));
+ 		if (cnt == 0)
+-			printf("no peers configured\n");
++			printf("ntpctl: no peers configured\n");
+ 		return;
+ 	}
+ 
+ 	if (imsg->hdr.len != IMSG_HEADER_SIZE + sizeof(struct ctl_show_peer))
+-		fatalx("invalid IMSG_CTL_SHOW_PEERS received");
++		fatalx("ntpctl: invalid control socket data size for NTP peer check");
+ 
+ 	cpeer = (struct ctl_show_peer *)imsg->data;
+ 
+ 	if (strlen(cpeer->peer_desc) > MAX_DISPLAY_WIDTH - 1)
+-		fatalx("peer_desc is too long");
++		fatalx("ntpctl: NTP peer description is too long");
+ 
+ 	if (firsttime) {
+ 		firsttime = 0;
+@@ -968,20 +968,20 @@ show_sensor_msg(struct imsg *imsg, int c
+ 
+ 	if (imsg->hdr.type == IMSG_CTL_SHOW_SENSORS_END) {
+ 		if (imsg->hdr.len != IMSG_HEADER_SIZE + sizeof(cnt))
+-			fatalx("invalid IMSG_CTL_SHOW_SENSORS_END received");
++			fatalx("ntpctl: invalid control socket data size for sensor end check");
+ 		memcpy(&cnt, imsg->data, sizeof(cnt));
+ 		if (cnt == 0)
+-			printf("no sensors configured\n");
++			printf("ntpctl: no sensors configured\n");
+ 		return;
+ 	}
+ 
+ 	if (imsg->hdr.len != IMSG_HEADER_SIZE + sizeof(struct ctl_show_sensor))
+-		fatalx("invalid IMSG_CTL_SHOW_SENSORS received");
++		fatalx("ntpctl: invalid control socket data size for a sensor end check");
+ 
+ 	csensor = (struct ctl_show_sensor *)imsg->data;
+ 
+ 	if (strlen(csensor->sensor_desc) > MAX_DISPLAY_WIDTH - 1)
+-		fatalx("sensor_desc is too long");
++		fatalx("ntpctl: sensor description is too long");
+ 
+ 	if (firsttime) {
+ 		firsttime = 0;
+--- a/src/ntp_dns.c	2020-08-01 00:19:23.449059082 +0300
++++ b/src/ntp_dns.c	2020-07-31 23:26:26.505722398 +0300
+@@ -66,16 +66,16 @@ ntp_dns(struct ntpd_conf *nconf, struct
+ 
+ 	res_init();
+ 	if (setpriority(PRIO_PROCESS, 0, 0) == -1)
+-		log_warn("could not set priority");
++		log_warn("DNS process: can't set priority");
+ 
+ 	log_init(nconf->debug ? LOG_TO_STDERR : LOG_TO_SYSLOG, nconf->verbose,
+ 	    LOG_DAEMON);
+ 	if (!nconf->debug && setsid() == -1)
+-		fatal("setsid");
+-	log_procinit("dns");
++		fatal("DNS process: can't create a new session");
++	log_procinit("DNS");
+ 
+ 	if ((nullfd = open("/dev/null", O_RDWR, 0)) == -1)
+-		fatal(NULL);
++		fatal("DNS process: can't read /dev/null");
+ 
+ 	if (!nconf->debug) {
+ 		dup2(nullfd, STDIN_FILENO);
+@@ -84,28 +84,28 @@ ntp_dns(struct ntpd_conf *nconf, struct
+ 	}
+ 	close(nullfd);
+ 
+-	setproctitle("dns engine");
++	setproctitle("DNS engine");
+ 
+ 	if (setgroups(1, &pw->pw_gid) ||
+ 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+ 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+-		fatal("can't drop privileges");
++		fatal("DNS process: can't drop privileges");
+ 
+ 	signal(SIGTERM, sighdlr_dns);
+ 	signal(SIGINT, sighdlr_dns);
+ 	signal(SIGHUP, SIG_IGN);
+ 
+ 	if ((ibuf_dns = malloc(sizeof(struct imsgbuf))) == NULL)
+-		fatal(NULL);
++		fatal("DNS process: can't allocate memory for data buffer");
+ 	imsg_init(ibuf_dns, PARENT_SOCK_FILENO);
+ 
+ 	if (pledge("stdio dns", NULL) == -1)
+-		err(1, "pledge");
++		err(1, "DNS process: can't restrict privileges");
+ 
+ 	if (non_numeric)
+ 		probe_root();
+ 	else
+-		log_debug("all addresses numeric, no dns probe");
++		log_debug("DNS process: all addresses numeric, no DNS probe");
+ 
+ 	while (quit_dns == 0) {
+ 		pfd[0].fd = ibuf_dns->fd;
+@@ -115,14 +115,14 @@ ntp_dns(struct ntpd_conf *nconf, struct
+ 
+ 		if ((nfds = poll(pfd, 1, INFTIM)) == -1)
+ 			if (errno != EINTR) {
+-				log_warn("poll error");
++				log_warn("file descriptor: poll error");
+ 				quit_dns = 1;
+ 			}
+ 
+ 		if (nfds > 0 && (pfd[0].revents & POLLOUT))
+ 			if (msgbuf_write(&ibuf_dns->w) <= 0 &&
+ 			    errno != EAGAIN) {
+-				log_warn("pipe write error (to ntp engine)");
++				log_warn("file descriptor: pipe write error (to NTP engine)");
+ 				quit_dns = 1;
+ 			}
+ 
+@@ -168,11 +168,11 @@ dns_dispatch_imsg(struct ntpd_conf *ncon
+ 				str = "IMSG_CONSTRAINT_DNS";
+ 			name = imsg.data;
+ 			if (imsg.hdr.len < 1 + IMSG_HEADER_SIZE)
+-				fatalx("invalid %s received", str);
++				fatalx("DNS process: invalid header size received (%s)", str);
+ 			len = imsg.hdr.len - 1 - IMSG_HEADER_SIZE;
+ 			if (name[len] != '\0' ||
+ 			    strlen(name) != len)
+-				fatalx("invalid %s received", str);
++				fatalx("DNS process: invalid name received (%s)", str);
+ 			if ((cnt = host_dns(name, nconf->status.synced,
+ 			    &hn)) == -1)
+ 				break;
+@@ -252,5 +252,5 @@ probe_root(void)
+ 	}
+ 	if (imsg_compose(ibuf_dns, IMSG_PROBE_ROOT, 0, 0, -1, &n,
+ 	    sizeof(int)) == -1)
+-		fatalx("probe_root");
++		fatalx("DNS process: can't compose data buffer for probe");
+ }
+--- a/src/ntp_msg.c	2020-08-01 00:19:21.849059080 +0300
++++ b/src/ntp_msg.c	2020-07-31 23:27:44.465722482 +0300
+@@ -29,7 +29,7 @@ int
+ ntp_getmsg(struct sockaddr *sa, char *p, ssize_t len, struct ntp_msg *msg)
+ {
+ 	if (len != NTP_MSGSIZE_NOAUTH && len != NTP_MSGSIZE) {
+-		log_debug("malformed packet received from %s",
++		log_debug("NTP message: malformed packet received from %s",
+ 		    log_sockaddr(sa));
+ 		return (-1);
+ 	}
+@@ -57,12 +57,12 @@ ntp_sendmsg(int fd, struct sockaddr *sa,
+ 			/* logging is futile */
+ 			return (-1);
+ 		}
+-		log_warn("sendto");
++		log_warn("NTP message: can't send data to destination socket");
+ 		return (-1);
+ 	}
+ 
+ 	if (n != sizeof(*msg)) {
+-		log_warnx("ntp_sendmsg: only %zd of %zu bytes sent", n,
++		log_warnx("NTP message: only %zd of %zu bytes sent", n,
+ 		    sizeof(*msg));
+ 		return (-1);
+ 	}
+--- a/src/parse.y	2020-08-01 00:19:23.405725749 +0300
++++ b/src/parse.y	2020-07-31 23:57:08.642391006 +0300
+@@ -122,7 +122,7 @@ main		: LISTEN ON address listen_opts	{
+ 				next = h->next;
+ 				la = calloc(1, sizeof(struct listen_addr));
+ 				if (la == NULL)
+-					fatal("listen on calloc");
++					fatal("can't allocate memory for listening address");
+ 				la->fd = -1;
+ 				la->rtable = $4.rtable;
+ 				memcpy(&la->sa, &h->ss,
+@@ -348,7 +348,7 @@ urllist		: urllist address {
+ 
+ 			if (inet_pton(AF_INET, $2->name, &ina) != 1 &&
+ 			    inet_pton(AF_INET6, $2->name, &in6a) != 1) {
+-				yyerror("url can only be followed by IP "
++				yyerror("URL can only be followed by IP "
+ 				    "addresses");
+ 				free($2->name);
+ 				free($2);
+@@ -376,7 +376,7 @@ url		: STRING		{
+ 
+ 			if (($$ = calloc(1, sizeof(struct ntp_addr_wrap))) ==
+ 			    NULL)
+-				fatal("calloc");
++				fatal("can't allocate memory for URL");
+ 
+ 			if (strncmp("https://", $1,
+ 			    strlen("https://")) != 0) {
+@@ -388,16 +388,16 @@ url		: STRING		{
+ 				path = hname + strcspn(hname, "/\\");
+ 				if (*path != '\0') {
+ 					if (($$->path = strdup(path)) == NULL)
+-						fatal("strdup");
++						fatal("can't allocate memory for %s", path);
+ 					*path = '\0';
+ 				}
+ 				host(hname, &$$->a);
+ 				if (($$->name = strdup(hname)) == NULL)
+-					fatal("strdup");
++					fatal("can't allocate memory for %s", hname);
+ 			}
+ 			if ($$->path == NULL &&
+ 			    ($$->path = strdup("/")) == NULL)
+-				fatal("strdup");
++				fatal("can't allocate memory space for new URL");
+ 		}
+ 		;
+ 
+@@ -453,7 +453,7 @@ refid		: REFID STRING {
+ 			size_t l = strlen($2);
+ 
+ 			if (l < 1 || l > 4) {
+-				yyerror("refid must be 1 to 4 characters");
++				yyerror("refid length must be from 1 to 4 characters");
+ 				free($2);
+ 				YYERROR;
+ 			}
+@@ -482,7 +482,7 @@ rtable		: RTABLE NUMBER {
+ #ifdef RT_TABLEID_MAX
+ 			if ($2 < 0 || $2 > RT_TABLEID_MAX) {
+ 				yyerror("rtable must be between 1"
+-				    " and RT_TABLEID_MAX");
++				    " and %d", RT_TABLEID_MAX);
+ 				YYERROR;
+ 			}
+ #endif
+@@ -518,7 +518,7 @@ yyerror(const char *fmt, ...)
+ 	file->errors++;
+ 	va_start(ap, fmt);
+ 	if (vasprintf(&msg, fmt, ap) == -1)
+-		fatalx("yyerror vasprintf");
++		fatalx("can't create error string");
+ 	va_end(ap);
+ 	log_warnx("%s:%d: %s", file->name, yylval.lineno, msg);
+ 	free(msg);
+@@ -710,7 +710,7 @@ yylex(void)
+ 		}
+ 		yylval.v.string = strdup(buf);
+ 		if (yylval.v.string == NULL)
+-			fatal("yylex: strdup");
++			fatal("can't allocate memory for buffered quote string");
+ 		return (STRING);
+ 	}
+ 
+@@ -721,7 +721,7 @@ yylex(void)
+ 		do {
+ 			*p++ = c;
+ 			if ((size_t)(p-buf) >= sizeof(buf)) {
+-				yyerror("string too long");
++				yyerror("string is too long");
+ 				return (findeol());
+ 			}
+ 		} while ((c = lgetc(0)) != EOF && isdigit(c));
+@@ -760,7 +760,7 @@ nodigits:
+ 		do {
+ 			*p++ = c;
+ 			if ((size_t)(p-buf) >= sizeof(buf)) {
+-				yyerror("string too long");
++				yyerror("string is too long");
+ 				return (findeol());
+ 			}
+ 		} while ((c = lgetc(0)) != EOF && (allowed_in_string(c)));
+@@ -768,7 +768,7 @@ nodigits:
+ 		*p = '\0';
+ 		if ((token = lookup(buf)) == STRING)
+ 			if ((yylval.v.string = strdup(buf)) == NULL)
+-				fatal("yylex: strdup");
++				fatal("can't allocate memory for buffered string");
+ 		return (token);
+ 	}
+ 	if (c == '\n') {
+@@ -786,16 +786,16 @@ pushfile(const char *name)
+ 	struct file	*nfile;
+ 
+ 	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
+-		log_warn("%s", __func__);
++		log_warn("can't allocate space for file");
+ 		return (NULL);
+ 	}
+ 	if ((nfile->name = strdup(name)) == NULL) {
+-		log_warn("%s", __func__);
++		log_warn("can't allocate memory for file name");
+ 		free(nfile);
+ 		return (NULL);
+ 	}
+ 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
+-		log_warn("%s: %s", __func__, nfile->name);
++		log_warn("can't open file %s", nfile->name);
+ 		free(nfile->name);
+ 		free(nfile);
+ 		return (NULL);
+--- a/src/sensors.c	2020-08-01 00:19:21.849059080 +0300
++++ b/src/sensors.c	2020-07-31 23:58:46.572391110 +0300
+@@ -90,7 +90,7 @@ sensor_probe(int devid, char *dxname, st
+ 			return (0);
+ 		if (errno == ENOENT)
+ 			return (-1);
+-		log_warn("sensor_probe sysctl");
++		log_warn("sensor: can't set probe device from kernel data");
+ 	}
+ 
+ 	if (sensordev.maxnumt[SENSOR_TIMEDELTA] == 0)
+@@ -101,7 +101,9 @@ sensor_probe(int devid, char *dxname, st
+ 	slen = sizeof(*sensor);
+ 	if (sysctl(mib, 5, sensor, &slen, NULL, 0) == -1) {
+ 		if (errno != ENOENT)
+-			log_warn("sensor_probe sysctl");
++			log_warn("sensor %s: can't set probe device from kernel data",
++				sensor->device);
++			);
+ 		return (0);
+ 	}
+ 
+@@ -128,7 +130,9 @@ sensor_add(int sensordev, char *dxname)
+ 		return;
+ 
+ 	if ((s = calloc(1, sizeof(*s))) == NULL)
+-		fatal("sensor_add calloc");
++		fatal("sensor %s: can't allocate memory for the device",
++			s->device
++		);
+ 
+ 	s->next = getmonotime();
+ 	s->weight = cs->weight;
+@@ -136,7 +140,8 @@ sensor_add(int sensordev, char *dxname)
+ 	s->stratum = cs->stratum - 1;
+ 	s->trusted = cs->trusted;
+ 	if ((s->device = strdup(dxname)) == NULL)
+-		fatal("sensor_add strdup");
++		fatal("sensor %s: can't allocate memory for the device",
++			  s->device);
+ 	s->sensordevid = sensordev;
+ 
+ 	if (cs->refstr == NULL)
+@@ -148,7 +153,7 @@ sensor_add(int sensordev, char *dxname)
+ 
+ 	TAILQ_INSERT_TAIL(&conf->ntp_sensors, s, entry);
+ 
+-	log_debug("sensor %s added (weight %d, correction %.6f, refstr %.4u, "
++	log_debug("sensor %s: added (weight %d, correction %.6f, refstr %.4u, "
+ 	     "stratum %d)", s->device, s->weight, s->correction / 1e6,
+ 	     s->refid, s->stratum);
+ }
+@@ -244,7 +249,7 @@ sensor_update(struct ntp_sensor *s)
+ 
+ 	if ((offsets = calloc(SENSOR_OFFSETS, sizeof(struct ntp_offset *))) ==
+ 	    NULL)
+-		fatal("calloc sensor_update");
++		fatal("sensor %s: can't allocate memory for data update", s->device);
+ 
+ 	for (i = 0; i < SENSOR_OFFSETS; i++)
+ 		offsets[i] = &s->offsets[i];
+@@ -260,6 +265,6 @@ sensor_update(struct ntp_sensor *s)
+ 	}
+ 	free(offsets);
+ 
+-	log_debug("sensor update %s: offset %f", s->device, s->update.offset);
++	log_debug("sensor %s: update: offset %fs", s->device, s->update.offset);
+ 	priv_adjtime();
+ }
+--- a/src/server.c	2020-08-01 00:19:23.439059082 +0300
++++ b/src/server.c	2020-08-01 00:04:05.369058112 +0300
+@@ -53,7 +53,7 @@ setup_listeners(struct servent *se, stru
+ 		switch (lap->sa.ss_family) {
+ 		case AF_UNSPEC:
+ 			if (getifaddrs(&ifa) == -1)
+-				fatal("getifaddrs");
++				fatal("NTP server: can't get network interfaces");
+ 
+ 			for (ifap = ifa; ifap != NULL; ifap = ifap->ifa_next) {
+ 				sa = ifap->ifa_addr;
+@@ -87,7 +87,7 @@ setup_listeners(struct servent *se, stru
+ 
+ 				if ((la = calloc(1, sizeof(struct listen_addr))) ==
+ 				    NULL)
+-					fatal("setup_listeners calloc");
++					fatal("NTP server: can't allocate memory for listening address");
+ 
+ 				memcpy(&la->sa, sa, SA_LEN(sa));
+ #ifdef SO_RTABLE
+@@ -123,36 +123,37 @@ setup_listeners(struct servent *se, stru
+ 			la = nla;
+ 			continue;
+ 		default:
+-			fatalx("king bula sez: af borked");
++			fatalx("NTP server: wrong network address family");
+ 		}
+ 
+-		log_info("listening on %s %s",
++		log_info("NTP server: listening on %s %s (UDP port %d)",
+ 		    log_sockaddr((struct sockaddr *)&la->sa),
+-		    print_rtable(la->rtable));
++		    print_rtable(la->rtable),
++			ntohs((((struct sockaddr_in *)&la->sa)->sin_port)));
+ 
+ 		if ((la->fd = socket(la->sa.ss_family, SOCK_DGRAM, 0)) == -1)
+-			fatal("socket");
++			fatal("NTP server: socket error");
+ 
+ 		if (la->sa.ss_family == AF_INET && setsockopt(la->fd,
+ 		    IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) == -1)
+-			log_warn("setsockopt IPTOS_LOWDELAY");
++			log_warn("NTP server: can't set IPv4 socket field IP_TOS");
+ 
+ #ifdef IPV6_V6ONLY
+ 		if (la->sa.ss_family == AF_INET6 && setsockopt(la->fd,
+ 		    IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on)) == -1)
+-			log_warn("setsockopt IPV6_V6ONLY");
++			log_warn("NTP server: can't set IPv6 socket field IPV6_V6ONLY");
+ #endif
+ 
+ #ifdef SO_RTABLE
+ 		if (la->rtable != -1 &&
+ 		    setsockopt(la->fd, SOL_SOCKET, SO_RTABLE, &la->rtable,
+ 		    sizeof(la->rtable)) == -1)
+-			fatal("setup_listeners setsockopt SO_RTABLE");
++			log_warn("NTP server: can't set socket field SO_RTABLE");
+ #endif
+ 
+ 		if (bind(la->fd, (struct sockaddr *)&la->sa,
+ 		    SA_LEN((struct sockaddr *)&la->sa)) == -1) {
+-			log_warn("bind on %s failed, skipping",
++			log_warn("NTP server %s: bind failed, skipping",
+ 			    log_sockaddr((struct sockaddr *)&la->sa));
+ 			close(la->fd);
+ 			nla = TAILQ_NEXT(la, entry);
+@@ -185,11 +186,12 @@ server_dispatch(int fd, struct ntpd_conf
+ 	    (struct sockaddr *)&fsa, &fsa_len)) == -1) {
+ 		if (errno == EHOSTUNREACH || errno == EHOSTDOWN ||
+ 		    errno == ENETUNREACH || errno == ENETDOWN) {
+-			log_warn("recvfrom %s",
++			log_warn("NTP server %s: can't receive socket message: "
++			"network is down or host is unreachable",
+ 			    log_sockaddr((struct sockaddr *)&fsa));
+ 			return (0);
+ 		} else
+-			fatal("recvfrom");
++			fatal("NTP server: can't receive socket message");
+ 	}
+ 
+ 	rectime = gettime_corrected();
+--- a/src/util.c	2020-08-01 00:19:23.449059082 +0300
++++ b/src/util.c	2020-08-01 01:35:02.868060038 +0300
+@@ -46,7 +46,7 @@ gettime(void)
+ 	struct timeval	tv;
+ 
+ 	if (gettimeofday(&tv, NULL) == -1)
+-		fatal("gettimeofday");
++		fatal("can't get time value");
+ 
+ 	return (gettime_from_timeval(&tv));
+ }
+@@ -66,7 +66,7 @@ getmonotime(void)
+ 	struct timespec	ts;
+ 
+ 	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+-		fatal("clock_gettime");
++		fatal("can't get elapsed clock time");
+ 
+ 	return (ts.tv_sec);
+ }
+@@ -172,7 +172,7 @@ start_child(char *pname, int cfd, int ar
+ 	/* Prepare the child process new argv. */
+ 	nargv = calloc(argc + 3, sizeof(char *));
+ 	if (nargv == NULL)
+-		fatal("%s: calloc", __func__);
++		fatal("main process: can't allocate enough memory for child (%s)", __func__);
+ 
+ 	/* Copy the program name first. */
+ 	nargc = 0;
+@@ -188,18 +188,18 @@ start_child(char *pname, int cfd, int ar
+ 
+ 	switch (pid = fork()) {
+ 	case -1:
+-		fatal("%s: fork", __func__);
++		fatal("main process: can't fork (%s)", __func__);
+ 		break;
+ 	case 0:
+ 		/* Prepare the parent socket and execute. */
+ 		if (cfd != PARENT_SOCK_FILENO) {
+ 			if (dup2(cfd, PARENT_SOCK_FILENO) == -1)
+-				fatal("dup2");
++				fatal("parent socket: can't duplicate file descriptor %d", cfd);
+ 		} else if (fcntl(cfd, F_SETFD, 0) == -1)
+-			fatal("fcntl");
++			fatal("child file descriptor %d: can't reset flags", cfd);
+ 
+ 		execvp(argv[0], nargv);
+-		fatal("%s: execvp", __func__);
++		fatal("child process: duplication of actions (%s: execvp)", __func__);
+ 		break;
+ 
+ 	default:
+--- a/compat/adjfreq_freebsd.c	2020-08-01 00:19:08.772392399 +0300
++++ b/compat/adjfreq_freebsd.c	2020-08-01 00:14:17.172392093 +0300
+@@ -38,19 +38,19 @@ adjfreq(const int64_t *freq, int64_t *ol
+ 		txc.freq = *freq / 1e3 / (1LL << 16);
+ 
+ 		if ((ntp_adjtime(&txc)) == -1)
+-			log_warn("ntp_adjtime (2) failed");
++			log_warn("clock: adjustment failed");
+ 
+-		log_debug("ntp_adjtime adjusted frequency by %fppm",
++		log_debug("clock: frequency adjusted by %fppm",
+ 			  ((txc.freq * 1e3) *  (1LL<<16) / 1e3 / (1LL << 32)));
+ 	}
+ 	if (oldfreq != NULL) {
+ 		txc.modes = 0;
+ 		if ((ntp_adjtime(&txc)) == -1) {
+-			log_warn("ntp_adjtime (1) failed");
++			log_warn("clock: adjustment failed");
+ 			return -1;
+ 		}
+ 		newfreq = (txc.freq * 1e3) *  (1LL<<16);
+-		log_debug("ntp_adjtime returns frequency of %fppm",
++		log_debug("clock: adjustment returns frequency of %fppm",
+ 			  newfreq / 1e3 / (1LL << 32));
+ 		*oldfreq = newfreq;
+ 	}
+@@ -74,6 +74,6 @@ update_time_sync_status(int synced)
+ 	} else
+ 		txc.status = STA_UNSYNC;
+ 	if (ntp_adjtime(&txc) == -1)
+-		log_warn("ntp_adjtime (3) failed");
++		log_warn("clock: adjustment failed");
+ 	return;
+ }
+--- a/compat/adjfreq_linux.c	2020-08-01 00:19:08.772392399 +0300
++++ b/compat/adjfreq_linux.c	2020-08-01 00:13:49.995725398 +0300
+@@ -38,19 +38,19 @@ adjfreq(const int64_t *freq, int64_t *ol
+ 		txc.freq = *freq / 1e3 / (1LL << 16);
+ 
+ 		if ((adjtimex(&txc)) == -1)
+-			log_warn("adjtimex failed");
++			log_warn("clock: adjustment failed");
+ 
+-		log_debug("adjtimex adjusted frequency by %fppm",
++		log_debug("clock: frequency adjusted by %fppm",
+ 			  ((txc.freq * 1e3) *  (1LL<<16) / 1e3 / (1LL << 32)));
+ 	}
+ 	if (oldfreq != NULL) {
+ 		txc.modes = 0;
+ 		if ((adjtimex(&txc)) == -1) {
+-			log_warn("adjtimex failed");
++			log_warn("clock: adjustment failed");
+ 			return -1;
+ 		}
+ 		newfreq = (txc.freq * 1e3) *  (1LL<<16);
+-		log_debug("adjtimex returns frequency of %fppm",
++		log_debug("clock: adjustment returns frequency of %fppm",
+ 			  newfreq / 1e3 / (1LL << 32));
+ 		*oldfreq = newfreq;
+ 	}
+@@ -74,6 +74,6 @@ update_time_sync_status(int synced)
+ 	} else
+ 		txc.status = STA_UNSYNC;
+ 	if (adjtimex(&txc) == -1)
+-		log_warn("ntp_adjtime (3) failed");
++		log_warn("clock: adjustment failed");
+ 	return;
+ }
+--- a/compat/adjfreq_netbsd.c	2020-08-01 00:19:08.772392399 +0300
++++ b/compat/adjfreq_netbsd.c	2020-08-01 00:15:45.465725518 +0300
+@@ -39,19 +39,19 @@ adjfreq(const int64_t *freq, int64_t *ol
+ 		txc.freq = *freq / 1e3 / (1LL << 16);
+ 
+ 		if ((ntp_adjtime(&txc)) == -1)
+-			log_warn("ntp_adjtime (2) failed");
++			log_warn("clock: adjustment failed");
+ 
+-		log_debug("ntp_adjtime adjusted frequency by %fppm",
++		log_debug("clock: frequency adjusted by %fppm",
+ 			  ((txc.freq * 1e3) *  (1LL<<16) / 1e3 / (1LL << 32)));
+ 	}
+ 	if (oldfreq != NULL) {
+ 		txc.modes = 0;
+ 		if ((ntp_adjtime(&txc)) == -1) {
+-			log_warn("ntp_adjtime (1) failed");
++			log_warn("clock: adjustment failed");
+ 			return -1;
+ 		}
+ 		newfreq = (txc.freq * 1e3) *  (1LL<<16);
+-		log_debug("ntp_adjtime returns frequency of %fppm",
++		log_debug("clock: adjustment returns frequency of %fppm",
+ 			  newfreq / 1e3 / (1LL << 32));
+ 		*oldfreq = newfreq;
+ 	}
+@@ -75,6 +75,6 @@ update_time_sync_status(int synced)
+ 	} else
+ 		txc.status = STA_UNSYNC;
+ 	if (ntp_adjtime(&txc) == -1)
+-		log_warn("ntp_adjtime (3) failed");
++		log_warn("clock: adjustment failed");
+ 	return;
+ }

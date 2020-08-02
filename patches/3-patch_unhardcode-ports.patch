@@ -1,0 +1,678 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Unhardcode NTP server, client and constraint UDP & TCP port numbers
+
+
+--- a/src/client.c	2020-08-02 02:03:13.840286484 +0300
++++ b/src/client.c	2020-08-02 02:04:23.993619892 +0300
+@@ -76,13 +76,13 @@ client_addr_init(struct ntp_peer *p)
+ 		case AF_INET:
+ 			sa_in = (struct sockaddr_in *)&h->ss;
+ 			if (ntohs(sa_in->sin_port) == 0)
+-				sa_in->sin_port = htons(123);
++				sa_in->sin_port = htons(p->addr_head.port);
+ 			p->state = STATE_DNS_DONE;
+ 			break;
+ 		case AF_INET6:
+ 			sa_in6 = (struct sockaddr_in6 *)&h->ss;
+ 			if (ntohs(sa_in6->sin6_port) == 0)
+-				sa_in6->sin6_port = htons(123);
++				sa_in6->sin6_port = htons(p->addr_head.port);
+ 			p->state = STATE_DNS_DONE;
+ 			break;
+ 		default:
+@@ -122,9 +122,10 @@ client_nextaddr(struct ntp_peer *p)
+ 	p->shift = 0;
+ 	p->trustlevel = TRUSTLEVEL_PATHETIC;
+ 
+-	if (p->addr == NULL)
++	if (p->addr == NULL) {
+ 		p->addr = p->addr_head.a;
+-	else if ((p->addr = p->addr->next) == NULL)
++		p->port = p->addr_head.port;
++	} else if ((p->addr = p->addr->next) == NULL)
+ 		return (1);
+ 
+ 	return (0);
+--- a/src/ntp.c	2020-07-31 23:34:32.000000000 +0300
++++ b/src/ntp.c	2020-08-01 00:56:09.608057581 +0300
+@@ -603,6 +603,8 @@ ntp_dispatch_imsg_dns(void)
+ 					    peer->addr_head.name;
+ 					npeer->addr_head.pool =
+ 					    peer->addr_head.pool;
++					npeer->addr_head.port =
++						peer->addr_head.port;
+ 					client_peer_init(npeer);
+ 					npeer->state = STATE_DNS_DONE;
+ 					peer_add(npeer);
+@@ -611,6 +613,7 @@ ntp_dispatch_imsg_dns(void)
+ 					h->next = peer->addr;
+ 					peer->addr = h;
+ 					peer->addr_head.a = peer->addr;
++					peer->addr_head.port = peer->port;
+ 					peer->state = STATE_DNS_DONE;
+ 				}
+ 			}
+--- a/src/config.c	2020-07-31 23:11:30.000000000 +0300
++++ b/src/config.c	2020-08-01 01:02:14.468057965 +0300
+@@ -196,3 +196,10 @@ new_constraint(void)
+ 	return (p);
+ }
+ 
++int
++intdup(int in)
++{
++	int *out;
++	out = &in;
++	return *out;
++}
+--- a/src/ntpd.h	2020-07-31 23:00:51.000000000 +0300
++++ b/src/ntpd.h	2020-08-01 01:27:06.418059534 +0300
+@@ -95,7 +95,7 @@
+ #define CONSTRAINT_SCAN_INTERVAL	(15*60)
+ #define CONSTRAINT_SCAN_TIMEOUT		(10)
+ #define CONSTRAINT_MARGIN		(2.0*60)
+-#define CONSTRAINT_PORT			"443"	/* HTTPS port */
++
+ #define	CONSTRAINT_MAXHEADERLENGTH	8192
+ #define CONSTRAINT_PASSFD		(STDERR_FILENO + 1)
+ 
+@@ -121,6 +121,7 @@ struct listen_addr {
+ 	struct sockaddr_storage		 sa;
+ 	int				 fd;
+ 	int				 rtable;
++	int				port;
+ };
+ 
+ struct ntp_addr {
+@@ -132,14 +133,17 @@ struct ntp_addr {
+ struct ntp_addr_wrap {
+ 	char			*name;
+ 	char			*path;
++	int				port;
+ 	struct ntp_addr		*a;
+ 	u_int8_t		 pool;
+ };
+ 
+ struct ntp_addr_msg {
+ 	struct ntp_addr		 a;
++	int		port;
+ 	size_t			 namelen;
+ 	size_t			 pathlen;
++	size_t			portlen;
+ };
+ 
+ struct ntp_status {
+@@ -184,6 +188,7 @@ struct ntp_peer {
+ 	u_int8_t			 trusted;
+ 	int				 lasterror;
+ 	int				 senderrors;
++	int				port;
+ };
+ 
+ struct ntp_sensor {
+@@ -206,6 +211,7 @@ struct constraint {
+ 	TAILQ_ENTRY(constraint)		 entry;
+ 	struct ntp_addr_wrap		 addr_head;
+ 	struct ntp_addr			*addr;
++	int				port;
+ 	int				 senderrors;
+ 	enum client_state		 state;
+ 	u_int32_t			 id;
+@@ -365,6 +371,7 @@ void			 host_dns_free(struct ntp_addr *)
+ struct ntp_peer		*new_peer(void);
+ struct ntp_conf_sensor	*new_sensor(char *);
+ struct constraint	*new_constraint(void);
++int 	intdup(int);
+ 
+ /* ntp_msg.c */
+ int	ntp_getmsg(struct sockaddr *, char *, ssize_t, struct ntp_msg *);
+@@ -401,6 +408,7 @@ void	 priv_constraint_kill(u_int32_t);
+ int	 priv_constraint_dispatch(struct pollfd *);
+ void	 priv_constraint_check_child(pid_t, int);
+ char	*get_string(u_int8_t *, size_t);
++int	intlen(int);
+ 
+ /* util.c */
+ double			 gettime_corrected(void);
+--- a/src/constraint.c	2020-08-02 01:56:09.060286035 +0300
++++ b/src/constraint.c	2020-08-02 01:56:47.110286075 +0300
+@@ -66,11 +66,11 @@ void	 priv_constraint_readquery(struct c
+ 	    uint8_t **);
+ 
+ struct httpsdate *
+-	 httpsdate_init(const char *, const char *, const char *,
++	 httpsdate_init(const char *, const int *, const char *,
+ 	    const char *, const u_int8_t *, size_t);
+ void	 httpsdate_free(void *);
+ int	 httpsdate_request(struct httpsdate *, struct timeval *);
+-void	*httpsdate_query(const char *, const char *, const char *,
++void	*httpsdate_query(const char *, const int *, const char *,
+ 	    const char *, const u_int8_t *, size_t,
+ 	    struct timeval *, struct timeval *);
+ 
+@@ -125,13 +125,13 @@ constraint_addr_init(struct constraint *
+ 	case AF_INET:
+ 		sa_in = (struct sockaddr_in *)&h->ss;
+ 		if (ntohs(sa_in->sin_port) == 0)
+-			sa_in->sin_port = htons(443);
++			sa_in->sin_port = htons(cstr->addr_head.port);
+ 		cstr->state = STATE_DNS_DONE;
+ 		break;
+ 	case AF_INET6:
+ 		sa_in6 = (struct sockaddr_in6 *)&h->ss;
+ 		if (ntohs(sa_in6->sin6_port) == 0)
+-			sa_in6->sin6_port = htons(443);
++			sa_in6->sin6_port = htons(cstr->addr_head.port);
+ 		cstr->state = STATE_DNS_DONE;
+ 		break;
+ 	default:
+@@ -206,6 +206,7 @@ constraint_query(struct constraint *cstr
+ 
+ 	memset(&am, 0, sizeof(am));
+ 	memcpy(&am.a, cstr->addr, sizeof(am.a));
++	memcpy(&am.port, &cstr->addr_head.port, sizeof(am.port));
+ 
+ 	iov[iov_cnt].iov_base = &am;
+ 	iov[iov_cnt++].iov_len = sizeof(am);
+@@ -219,6 +220,11 @@ constraint_query(struct constraint *cstr
+ 		iov[iov_cnt].iov_base = cstr->addr_head.path;
+ 		iov[iov_cnt++].iov_len = am.pathlen;
+ 	}
++	if (cstr->addr_head.port) {
++		am.portlen = intlen(cstr->addr_head.port) + 1;
++		iov[iov_cnt].iov_base = &cstr->addr_head.port;
++		iov[iov_cnt++].iov_len = am.portlen;
++	}
+ 
+ 	imsg_composev(ibuf_main, IMSG_CONSTRAINT_QUERY,
+ 	    cstr->id, 0, -1, iov, iov_cnt);
+@@ -246,7 +252,7 @@ priv_constraint_msg(u_int32_t id, u_int8
+ 		return;
+ 	}
+ 	memcpy(&am, data, sizeof(am));
+-	if (len != (sizeof(am) + am.namelen + am.pathlen)) {
++    if (len != (sizeof(am) + am.namelen + am.pathlen + am.portlen)) {
+ 		log_warnx("constraint id %d: invalid query received", id);
+ 		return;
+ 	}
+@@ -301,6 +307,7 @@ priv_constraint_readquery(struct constra
+ 	int			 n;
+ 	struct imsg		 imsg;
+ 	size_t			 mlen;
++	int			port;
+ 
+ 	/* Read the message our parent left us. */
+ 	if (((n = imsg_read(&cstr->ibuf)) == -1 && errno != EAGAIN) || n == 0)
+@@ -324,7 +331,7 @@ priv_constraint_readquery(struct constra
+ 		);
+ 
+ 	memcpy(am, imsg.data, sizeof(*am));
+-	if (mlen != (sizeof(*am) + am->namelen + am->pathlen))
++	if (mlen != (sizeof(*am) + am->namelen + am->pathlen + am->portlen))
+ 		fatalx("constraint: invalid message length received from parent process (%s)",
+ 			   __func__
+ 			  );
+@@ -334,12 +341,15 @@ priv_constraint_readquery(struct constra
+ 		fatal("constraint: can't allocate memory (%s)", __func__);
+ 
+ 	memcpy(h, &am->a, sizeof(*h));
++	memcpy(&port, &am->port, sizeof(port));
+ 	h->next = NULL;
+-
++	
+ 	cstr->id = imsg.hdr.peerid;
+ 	cstr->addr = h;
+ 	cstr->addr_head.a = h;
+-
++	cstr->port = port;
++	cstr->addr_head.port = port;
++	
+ 	dptr = imsg.data;
+ 	memcpy(*data, dptr + sizeof(*am), mlen - sizeof(*am));
+ 	imsg_free(&imsg);
+@@ -434,10 +444,14 @@ priv_constraint_child(const char *pw_dir
+ 		    get_string(data, am.pathlen)) == NULL)
+ 			fatalx("constraint %s: invalid path", addr);
+ 	}
++	if (am.portlen) {
++		if (cstr.addr_head.port == 0)
++			fatalx("constraint %s: invalid port", addr);
++	}
+ 
+ 	/* Run! */
+ 	if ((ctx = httpsdate_query(addr,
+-	    CONSTRAINT_PORT, cstr.addr_head.name, cstr.addr_head.path,
++	    &cstr.addr_head.port, cstr.addr_head.name, cstr.addr_head.path,
+ 	    conf->ca, conf->ca_len, &rectv, &xmttv)) == NULL) {
+ 		log_debug("constraint %s: failed to get proper time results", addr);
+ 		/* Abort with failure but without warning */
+@@ -800,8 +814,14 @@ constraint_msg_dns(u_int32_t id, u_int8_
+ 			ncstr->addr_head.a = h;
+ 			ncstr->addr_head.name = strdup(cstr->addr_head.name);
+ 			ncstr->addr_head.path = strdup(cstr->addr_head.path);
++			ncstr->addr_head.port = intdup(cstr->addr_head.port);
++
++			// Unless we do this, we have value 0 in ncstr->port
++			ncstr->port = intdup(cstr->port);
++
+ 			if (ncstr->addr_head.name == NULL ||
+-			    ncstr->addr_head.path == NULL)
++			    ncstr->addr_head.path == NULL ||
++			    ncstr->addr_head.port == 0 || ncstr->port == 0)
+                 fatal("constraint id %d: DNS dispatching failed: invalid data", id);
+ 			ncstr->addr_head.pool = cstr->addr_head.pool;
+ 			ncstr->state = STATE_DNS_DONE;
+@@ -811,6 +831,7 @@ constraint_msg_dns(u_int32_t id, u_int8_
+ 			h->next = ncstr->addr;
+ 			ncstr->addr = h;
+ 			ncstr->addr_head.a = h;
++			// TODO missing port?
+ 		}
+ 	} while (len);
+ 
+@@ -912,10 +933,11 @@ constraint_check(double val)
+ }
+ 
+ struct httpsdate *
+-httpsdate_init(const char *addr, const char *port, const char *hostname,
++httpsdate_init(const char *addr, const int *port, const char *hostname,
+     const char *path, const u_int8_t *ca, size_t ca_len)
+ {
+ 	struct httpsdate	*httpsdate = NULL;
++	char	port_s[sizeof(port)];
+ 
+ 	if ((httpsdate = calloc(1, sizeof(*httpsdate))) == NULL)
+ 		goto fail;
+@@ -923,8 +945,10 @@ httpsdate_init(const char *addr, const c
+ 	if (hostname == NULL)
+ 		hostname = addr;
+ 
++	sprintf(port_s, "%d", *port);
++
+ 	if ((httpsdate->tls_addr = strdup(addr)) == NULL ||
+-	    (httpsdate->tls_port = strdup(port)) == NULL ||
++	    (httpsdate->tls_port = strdup(port_s)) == NULL ||
+ 	    (httpsdate->tls_hostname = strdup(hostname)) == NULL ||
+ 	    (httpsdate->tls_path = strdup(path)) == NULL)
+ 		goto fail;
+@@ -1098,7 +1122,7 @@ httpsdate_request(struct httpsdate *http
+ }
+ 
+ void *
+-httpsdate_query(const char *addr, const char *port, const char *hostname,
++httpsdate_query(const char *addr, const int *port, const char *hostname,
+     const char *path, const u_int8_t *ca, size_t ca_len,
+     struct timeval *rectv, struct timeval *xmttv)
+ {
+@@ -1183,3 +1207,17 @@ get_string(u_int8_t *ptr, size_t len)
+ 
+ 	return strndup(ptr, i);
+ }
++
++int
++intlen(int val)
++{
++	int n = 1;
++	if (val < 0)
++		return 0;
++	while(val > 9) {
++		n++;
++		val /= 10;
++	}
++
++	return val;
++}
+--- a/src/parse.y	2020-07-31 23:57:08.000000000 +0300
++++ b/src/parse.y	2020-08-01 01:51:28.041394057 +0300
+@@ -60,6 +60,7 @@ int		 findeol(void);
+ struct sockaddr_in		 query_addr4;
+ struct sockaddr_in6		 query_addr6;
+ int				 poolseqnum;
++struct servent		*se;
+ 
+ struct opts {
+ 	int		weight;
+@@ -68,6 +69,7 @@ struct opts {
+ 	int		rtable;
+ 	int		trusted;
+ 	char		*refstr;
++	int		port;
+ } opts;
+ void		opts_default(void);
+ 
+@@ -86,18 +88,21 @@ typedef struct {
+ %token	LISTEN ON CONSTRAINT CONSTRAINTS FROM QUERY TRUSTED
+ %token	SERVER SERVERS SENSOR CORRECTION RTABLE REFID STRATUM WEIGHT
+ %token	ERROR
++%token	PORT
+ %token	<v.string>		STRING
+ %token	<v.number>		NUMBER
+ %type	<v.addr>		address url urllist
+ %type	<v.opts>		listen_opts listen_opts_l listen_opt
+ %type	<v.opts>		server_opts server_opts_l server_opt
+ %type	<v.opts>		sensor_opts sensor_opts_l sensor_opt
++%type	<v.opts>		constraint_opts constraint_opts_l constraint_opt
+ %type	<v.opts>		correction
+ %type	<v.opts>		rtable
+ %type	<v.opts>		refid
+ %type	<v.opts>		stratum
+ %type	<v.opts>		weight
+ %type	<v.opts>		trusted
++%type	<v.opts>		port
+ %%
+ 
+ grammar		: /* empty */
+@@ -125,6 +130,10 @@ main		: LISTEN ON address listen_opts	{
+ 					fatal("can't allocate memory for listening address");
+ 				la->fd = -1;
+ 				la->rtable = $4.rtable;
++
++				if ($4.port != 0)
++					la->port = $4.port;
++
+ 				memcpy(&la->sa, &h->ss,
+ 				    sizeof(struct sockaddr_storage));
+ 				TAILQ_INSERT_TAIL(&conf->listen_addrs, la,
+@@ -186,10 +195,22 @@ main		: LISTEN ON address listen_opts	{
+ 				p->trusted = $3.trusted;
+ 				conf->trusted_peers = conf->trusted_peers ||
+ 				    $3.trusted;
++
++				if ($3.port == 0) {
++					if ((se = getservbyname("ntp", "udp")) == NULL) {
++						fatal("new server: can't find default system information for NTP protocol (getservbyname)");
++					} else {
++						$3.port = ntohs(se->s_port);
++					}
++				}
++				p->port = $3.port;
++				$2->port = p->port;
++
+ 				p->query_addr4 = query_addr4;
+ 				p->query_addr6 = query_addr6;
+ 				p->addr = h;
+ 				p->addr_head.a = h;
++				p->addr_head.port = intdup($2->port);
+ 				p->addr_head.pool = ++poolseqnum;
+ 				p->addr_head.name = strdup($2->name);
+ 				if (p->addr_head.name == NULL)
+@@ -228,9 +249,21 @@ main		: LISTEN ON address listen_opts	{
+ 			p->trusted = $3.trusted;
+ 			conf->trusted_peers = conf->trusted_peers ||
+ 			    $3.trusted;
++
++			if ($3.port == 0) {
++				if ((se = getservbyname("ntp", "udp")) == NULL) {
++					fatal("new server: can't find default system information for NTP protocol (getservbyname)");
++				} else {
++					$3.port = ntohs(se->s_port);
++				}
++			}
++			p->port = $3.port;
++			$2->port = p->port;
++
+ 			p->query_addr4 = query_addr4;
+ 			p->query_addr6 = query_addr6;
+ 			p->addr_head.a = p->addr;
++			p->addr_head.port = intdup($2->port);
+ 			p->addr_head.pool = 0;
+ 			p->addr_head.name = strdup($2->name);
+ 			if (p->addr_head.name == NULL)
+@@ -241,7 +274,7 @@ main		: LISTEN ON address listen_opts	{
+ 			free($2->name);
+ 			free($2);
+ 		}
+-		| CONSTRAINTS FROM url		{
++		| CONSTRAINTS FROM url constraint_opts		{
+ 			struct constraint	*p;
+ 			struct ntp_addr		*h, *next;
+ 
+@@ -266,6 +299,17 @@ main		: LISTEN ON address listen_opts	{
+ 				p = new_constraint();
+ 				p->addr = h;
+ 				p->addr_head.a = h;
++
++				if ($4.port == 0) {
++					if ((se = getservbyname("https", "tcp")) == NULL) {
++						fatal("new constraint: can't find default system information for HTTPS protocol (getservbyname)");
++					} else {
++						$4.port = ntohs(se->s_port);
++					}
++				}
++				p->port = $4.port;
++				p->addr_head.port = intdup($4.port);
++
+ 				p->addr_head.pool = ++poolseqnum;
+ 				p->addr_head.name = strdup($3->name);
+ 				p->addr_head.path = strdup($3->path);
+@@ -281,7 +325,7 @@ main		: LISTEN ON address listen_opts	{
+ 			free($3->name);
+ 			free($3);
+ 		}
+-		| CONSTRAINT FROM urllist		{
++		| CONSTRAINT FROM urllist constraint_opts		{
+ 			struct constraint	*p;
+ 			struct ntp_addr		*h, *next;
+ 
+@@ -304,6 +348,17 @@ main		: LISTEN ON address listen_opts	{
+ 			}
+ 
+ 			p->addr_head.a = p->addr;
++
++			if ($4.port == 0) {
++				if ((se = getservbyname("https", "tcp")) == NULL) {
++						fatal("new constraint: can't find default system information for HTTPS protocol (getservbyname)");
++				} else {
++					$4.port = ntohs(se->s_port);
++				}
++			}
++			p->port = $4.port;
++			p->addr_head.port = intdup($4.port);
++
+ 			p->addr_head.pool = 0;
+ 			p->addr_head.name = strdup($3->name);
+ 			p->addr_head.path = strdup($3->path);
+@@ -410,6 +465,7 @@ listen_opts_l	: listen_opts_l listen_opt
+ 		| listen_opt
+ 		;
+ listen_opt	: rtable
++		| port
+ 		;
+ 
+ server_opts	:	{ opts_default(); }
+@@ -422,6 +478,18 @@ server_opts_l	: server_opts_l server_opt
+ 		;
+ server_opt	: weight
+ 		| trusted
++		| port
++		;
++
++constraint_opts	:	{ opts_default(); }
++		  constraint_opts_l
++			{ $$ = opts; }
++		|	{ opts_default(); $$ = opts; }
++		;
++constraint_opts_l	: constraint_opts_l constraint_opt
++		| constraint_opt
++		;
++constraint_opt	: port
+ 		;
+ 
+ sensor_opts	:	{ opts_default(); }
+@@ -478,6 +546,17 @@ weight		: WEIGHT NUMBER	{
+ 			}
+ 			opts.weight = $2;
+ 		}
++		;
++
++port		: PORT NUMBER	{
++			if ($2 < 1 || $2 > 65535) {
++				yyerror("port must be between 1 and 65535");
++				YYERROR;
++			}
++			opts.port = $2;
++		}
++		;
++
+ rtable		: RTABLE NUMBER {
+ #ifdef RT_TABLEID_MAX
+ 			if ($2 < 0 || $2 > RT_TABLEID_MAX) {
+@@ -502,6 +581,7 @@ opts_default(void)
+ 	memset(&opts, 0, sizeof opts);
+ 	opts.weight = 1;
+ 	opts.stratum = 1;
++	opts.port = 0;
+ }
+ 
+ struct keywords {
+@@ -542,6 +622,7 @@ lookup(char *s)
+ 		{ "from",		FROM},
+ 		{ "listen",		LISTEN},
+ 		{ "on",			ON},
++		{ "port",		PORT},
+ 		{ "query",		QUERY},
+ 		{ "refid",		REFID},
+ 		{ "rtable",		RTABLE},
+--- a/src/server.c	2020-08-01 00:04:05.000000000 +0300
++++ b/src/server.c	2020-08-01 01:14:42.328058753 +0300
+@@ -107,14 +107,18 @@ setup_listeners(struct servent *se, stru
+ 	for (la = TAILQ_FIRST(&lconf->listen_addrs); la; ) {
+ 		switch (la->sa.ss_family) {
+ 		case AF_INET:
+-			if (((struct sockaddr_in *)&la->sa)->sin_port == 0)
+-				((struct sockaddr_in *)&la->sa)->sin_port =
+-				    se->s_port;
++			if ((la->port == 0) && \
++			(((struct sockaddr_in *)&la->sa)->sin_port == 0))
++				((struct sockaddr_in *)&la->sa)->sin_port = se->s_port;
++			else
++				((struct sockaddr_in *)&la->sa)->sin_port = ntohs(la->port);
+ 			break;
+ 		case AF_INET6:
+-			if (((struct sockaddr_in6 *)&la->sa)->sin6_port == 0)
+-				((struct sockaddr_in6 *)&la->sa)->sin6_port =
+-				    se->s_port;
++			if ((la->port == 0) && \
++			(((struct sockaddr_in6 *)&la->sa)->sin6_port == 0))
++				((struct sockaddr_in6 *)&la->sa)->sin6_port = se->s_port;
++			else
++				((struct sockaddr_in6 *)&la->sa)->sin6_port = ntohs(la->port);
+ 			break;
+ 		case AF_UNSPEC:
+ 			nla = TAILQ_NEXT(la, entry);
+--- a/src/ntpd.conf.5	2020-07-31 23:00:51.000000000 +0300
++++ b/src/ntpd.conf.5	2020-08-01 01:22:25.424725907 +0300
+@@ -14,7 +14,7 @@
+ .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ .\"
+-.Dd $Mdocdate: May 16 2020 $
++.Dd $Mdocdate: August 01 2020 $
+ .Dt NTPD.CONF 5
+ .Os
+ .Sh NAME
+@@ -37,6 +37,7 @@ The basic configuration options are as f
+ .Bl -tag -width Ds
+ .It Xo Ic listen on Ar address
+ .Op Ic rtable Ar table-id
++.Op Ic port Ar port-number
+ .Xc
+ .Xr ntpd 8
+ has the ability to sync the local clock to remote NTP servers and, if
+@@ -62,6 +63,12 @@ keyword will specify which routing table
+ By default
+ .Xr ntpd 8
+ will listen using the current routing table.
++The optional
++.Ic port
++keyword will specify which local UDP port the NTP server process should use for inbound connections.
++By default
++.Xr ntpd 8
++will listen to UDP port 123 for new client connections.
+ For example:
+ .Bd -literal -offset indent
+ listen on *
+@@ -72,6 +79,7 @@ or
+ listen on 127.0.0.1
+ listen on ::1
+ listen on 127.0.0.1 rtable 4
++listen on 127.0.0.1 port 1230
+ .Ed
+ .It Ic query from Ar sourceaddr
+ Specify a local IP address the
+@@ -165,6 +173,7 @@ than a server with a weight of 1.
+ .It Xo Ic server Ar address
+ .Op Ic trusted
+ .Op Ic weight Ar weight-value
++.Op Ic port Ar port-number
+ .Xc
+ Specify the IP address or the hostname of an NTP
+ server to synchronize to.
+@@ -182,6 +191,7 @@ For example:
+ .Bd -literal -offset indent
+ server 10.0.0.2 weight 5
+ server ntp.example.org weight 1
++server ntp.foo.org port 123
+ .Ed
+ .Pp
+ To provide redundancy, it is good practice to configure multiple servers.
+@@ -190,6 +200,7 @@ network latency.
+ .It Xo Ic servers Ar address
+ .Op Ic trusted
+ .Op Ic weight Ar weight-value
++.Op Ic port Ar port-number
+ .Xc
+ As with
+ .Cm server ,
+@@ -204,6 +215,7 @@ For example:
+ .Bd -literal -offset indent
+ servers pool.ntp.org
+ servers pool.ntp.org weight 5
++servers pool.ntp.org weight 6 port 123
+ .Ed
+ .El
+ .Sh CONSTRAINTS
+@@ -227,8 +239,13 @@ without libtls causes
+ to log a warning message on startup.
+ .Bl -tag -width Ds
+ .It Ic constraint from Ar url [ip...]
++.Op Ic port Ar port-number
+ Specify the URL, IP address or the hostname of an HTTPS server to
+-provide a constraint.
++provide a constraint. The optional
++.Ic port
++number is an HTTPS server port to connect to. By default
++.Xr ntpd 8
++will connect to remote TCP port 443.
+ If the url is followed by one or more addresses the url and addresses will be
+ tried until a working one is found.
+ The url path and expected certificate name is always taken from the
+@@ -242,8 +259,10 @@ will calculate a median constraint from
+ server ntp.example.org
+ constraint from www.example.com
+ constraint from "https://9.9.9.9" "2620:fe::9"
++constraint from www.google.com port 443
+ .Ed
+ .It Ic constraints from Ar url
++.Op Ic port Ar port-number
+ As with
+ .Ic constraint from ,
+ specify the URL, IP address or the hostname of an HTTPS server to
+@@ -251,10 +270,16 @@ provide a constraint.
+ Should the hostname resolve to multiple IP addresses,
+ .Xr ntpd 8
+ will calculate a median constraint from all of them.
++The optional
++.Ic port
++number is an HTTPS server port to connect to. By default
++.Xr ntpd 8
++will connect to remote TCP port 443.
+ For example:
+ .Bd -literal -offset indent
+ servers pool.ntp.org
+ constraints from "https://www.google.com/"
++constraints from "https://duckduckgo.com/" port 443
+ .Ed
+ .El
+ .Sh FILES

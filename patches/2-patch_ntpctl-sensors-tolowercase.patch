@@ -1,0 +1,54 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Set 'Sensors' to lowercase in ntpctl settings
+
+
+--- a/src/ntpd.c	2020-08-01 13:33:10.798104786 +0300
++++ b/src/ntpd.c	2020-08-01 13:33:27.848104803 +0300
+@@ -76,7 +76,7 @@ extern u_int		 constraint_cnt;
+ const char		*showopt;
+ 
+ static const char *ctl_showopt_list[] = {
+-	"peers", "Sensors", "status", "all", NULL
++	"peers", "sensors", "status", "all", NULL
+ };
+ 
+ void
+@@ -115,7 +115,7 @@ usage(void)
+ 
+ 	if (strcmp(__progname, "ntpctl") == 0)
+ 		fprintf(stderr,
+-		    "usage: ntpctl -s all | peers | Sensors | status\n");
++		    "usage: ntpctl -s all | peers | sensors | status\n");
+ 	else
+ 		fprintf(stderr, "usage: %s [-dnv] [-f file] [-p file]\n",
+ 		    __progname);
+--- a/src/ntpctl.8	2020-07-31 23:00:50.329054281 +0300
++++ b/src/ntpctl.8	2020-08-01 00:35:22.158056263 +0300
+@@ -22,7 +22,7 @@
+ .Nd control the Network Time Protocol daemon
+ .Sh SYNOPSIS
+ .Nm ntpctl
+-.Fl s Cm all | peers | Sensors | status
++.Fl s Cm all | peers | sensors | status
+ .Sh DESCRIPTION
+ The
+ .Nm
+@@ -32,7 +32,7 @@ daemon.
+ .Pp
+ The options are as follows:
+ .Bl -tag -width "-s modifierX"
+-.It Fl s Cm all | peers | Sensors | status
++.It Fl s Cm all | peers | sensors | status
+ Used to display information about the running daemon.
+ Keywords may be abbreviated.
+ .Pp
+@@ -46,7 +46,7 @@ in seconds, and offset, network delay an
+ When the system clock is synced to a peer, an asterisk
+ is displayed to the left of the weight column for that peer.
+ .Pp
+-.Cm Sensors
++.Cm sensors
+ shows the following information about each sensor: weight, sensor "good"
+ status, stratum, and offset and the configured correction in
+ milliseconds.

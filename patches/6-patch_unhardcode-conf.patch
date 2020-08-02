@@ -1,0 +1,1906 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Unhardcode majority of configuration settings, update manual
+
+
+--- a/src/sensors.c	2020-07-31 23:58:46.000000000 +0300
++++ b/src/sensors.c	2020-08-01 12:22:05.214766958 +0300
+@@ -145,7 +145,7 @@ sensor_add(int sensordev, char *dxname)
+ 	s->sensordevid = sensordev;
+ 
+ 	if (cs->refstr == NULL)
+-		memcpy(&s->refid, SENSOR_DEFAULT_REFID, sizeof(s->refid));
++		memcpy(&s->refid, conf->sensor_default_refid, sizeof(s->refid));
+ 	else {
+ 		s->refid = 0;
+ 		strncpy((char *)&s->refid, cs->refstr, sizeof(s->refid));
+@@ -174,12 +174,12 @@ sensor_query(struct ntp_sensor *s)
+ 	double		 sens_time;
+ 
+ 	if (conf->settime)
+-		s->next = getmonotime() + SENSOR_QUERY_INTERVAL_SETTIME;
++		s->next = getmonotime() + conf->sensor_query_interval_settime;
+ 	else
+-		s->next = getmonotime() + SENSOR_QUERY_INTERVAL;
++		s->next = getmonotime() + conf->sensor_query_interval;
+ 
+ 	/* rcvd is walltime here, monotime in client.c. not used elsewhere */
+-	if (s->update.rcvd < time(NULL) - SENSOR_DATA_MAXAGE)
++	if (s->update.rcvd < time(NULL) - conf->sensor_data_maxage)
+ 		s->update.good = 0;
+ 
+ 	if (!sensor_probe(s->sensordevid, dxname, &sensor)) {
+@@ -234,7 +234,7 @@ sensor_query(struct ntp_sensor *s)
+ 	log_debug("sensor %s: offset %f", s->device,
+ 	    s->offsets[s->shift].offset);
+ 
+-	if (++s->shift >= SENSOR_OFFSETS) {
++	if (++s->shift >= conf->sensor_offsets) {
+ 		s->shift = 0;
+ 		sensor_update(s);
+ 	}
+@@ -247,19 +247,19 @@ sensor_update(struct ntp_sensor *s)
+ 	struct ntp_offset	**offsets;
+ 	int			  i;
+ 
+-	if ((offsets = calloc(SENSOR_OFFSETS, sizeof(struct ntp_offset *))) ==
++	if ((offsets = calloc(conf->sensor_offsets, sizeof(struct ntp_offset *))) ==
+ 	    NULL)
+ 		fatal("sensor %s: can't allocate memory for data update", s->device);
+ 
+-	for (i = 0; i < SENSOR_OFFSETS; i++)
++	for (i = 0; i < conf->sensor_offsets; i++)
+ 		offsets[i] = &s->offsets[i];
+ 
+-	qsort(offsets, SENSOR_OFFSETS, sizeof(struct ntp_offset *),
++	qsort(offsets, conf->sensor_offsets, sizeof(struct ntp_offset *),
+ 	    offset_compare);
+ 
+-	i = SENSOR_OFFSETS / 2;
++	i = conf->sensor_offsets / 2;
+ 	memcpy(&s->update, offsets[i], sizeof(s->update));
+-	if (SENSOR_OFFSETS % 2 == 0) {
++	if (conf->sensor_offsets % 2 == 0) {
+ 		s->update.offset =
+ 		    (offsets[i - 1]->offset + offsets[i]->offset) / 2;
+ 	}
+--- a/src/ntpd.c	2020-08-01 16:07:32.660248971 +0300
++++ b/src/ntpd.c	2020-08-01 17:13:23.406919806 +0300
+@@ -135,7 +135,7 @@ auto_preconditions(const struct ntpd_con
+ #endif
+ 	constraints = !TAILQ_EMPTY(&cnf->constraints);
+ 	return !cnf->settime && (constraints || cnf->trusted_peers ||
+-	    conf->trusted_sensors) && securelevel == 0;
++	    cnf->trusted_sensors) && securelevel == 0;
+ }
+ 
+ #define POLL_MAX		8
+@@ -195,14 +195,14 @@ main(int argc, char *argv[])
+ 		switch (ch) {
+ 		case 'd':
+ 			lconf.debug = 1;
+-			lconf.verbose = 2;
++            lconf.verbose = 2;
+ 			break;
+ 		case 'f':
+ 			conffile = optarg;
+ 			break;
+ 		case 'n':
+ 			lconf.debug = 1;
+-			lconf.verbose = 2;
++            lconf.verbose = 2;
+ 			lconf.noaction = 1;
+ 			break;
+ 		case 'P':
+@@ -253,8 +253,8 @@ main(int argc, char *argv[])
+ 	if (geteuid())
+ 		errx(1, "main process: need root privileges");
+ 
+-	if ((pw = getpwnam(NTPD_USER)) == NULL)
+-		errx(1, "main process: unknown user %s", NTPD_USER);
++	if ((pw = getpwnam(conf->ntpd_user)) == NULL)
++		errx(1, "main process: unknown user %s", conf->ntpd_user);
+ 
+ 	lconf.automatic = auto_preconditions(&lconf);
+ 	if (lconf.automatic)
+@@ -277,7 +277,7 @@ main(int argc, char *argv[])
+ 
+ 		fatalx("main process: process '%s' failed (%s)", pname, __func__);
+ 	} else {
+-		if ((control_check(CTLSOCKET)) == -1)
++		if ((control_check(conf->ctlsocket)) == -1)
+ 			fatalx("OpenNTPD is already running");
+ 	}
+ 
+@@ -295,7 +295,7 @@ main(int argc, char *argv[])
+ 		}
+ 	} else {
+ 		settime_deadline = getmonotime();
+-		timeout = 100;
++		timeout = conf->settime_timeout;
+ 	}
+ 
+ 	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNSPEC,
+@@ -311,6 +311,10 @@ main(int argc, char *argv[])
+ 	start_child(NTP_PROC_NAME, pipe_chld[1], argc0, argv0);
+ 
+ 	log_procinit("[priv]");
++
++	if (lconf.debug)
++		print_conf(&lconf);
++
+ 	readfreq();
+ 
+ 	signal(SIGTERM, sighdlr);
+@@ -370,7 +374,7 @@ main(int argc, char *argv[])
+ 			}
+ 
+ 		if (nfds == 0 && lconf.settime &&
+-		    getmonotime() > settime_deadline + SETTIME_TIMEOUT) {
++		    getmonotime() > settime_deadline + conf->settime_timeout) {
+ 			lconf.settime = 0;
+ 			timeout = INFTIM;
+ 			log_init(logdest, lconf.verbose, LOG_DAEMON);
+@@ -520,7 +524,7 @@ ntpd_adjtime(double d)
+ {
+ 	int		synced = 0;
+ 	static int	firstadj = 1;
+-	double threshold = (double)LOG_NEGLIGIBLE_ADJTIME / 1000;
++	double threshold = (double)conf->log_negligible_adjtime / 1000;
+ 
+ 	d += getoffset();
+ 	if (d >= threshold || d <= -1 * threshold)
+@@ -581,8 +585,8 @@ ntpd_adjfreq(double relfreq, int wrlog)
+ 	r = writefreq(curfreq / 1e9 / (1LL << 32));
+ 	ppmfreq = relfreq * 1e6;
+ 	if (wrlog) {
+-		if (ppmfreq >= LOG_NEGLIGIBLE_ADJFREQ ||
+-		    ppmfreq <= -LOG_NEGLIGIBLE_ADJFREQ)
++		if (ppmfreq >= conf->log_negligible_adjfreq ||
++		    ppmfreq <= -(conf->log_negligible_adjfreq))
+ 			log_info("main process: adjusting clock frequency by %f to %f ppm%s",
+ 			    ppmfreq, curfreq / 1e3 / (1LL << 32),
+ 			    r ? "" : " (no drift file)");
+@@ -634,13 +638,13 @@ readfreq(void)
+ 	int fd;
+ 	double d;
+ 
+-	fd = open(DRIFTFILE, O_RDWR);
++	fd = open(conf->driftfile, O_RDWR);
+ 	if (fd == -1) {
+-		log_warnx("main process: creating new drift file %s", DRIFTFILE);
++		log_warnx("main process: creating new drift file %s", conf->driftfile);
+ 		current = 0;
+ 		if (adjfreq(&current, NULL) == -1)
+ 			log_warn("main process: frequency reset failed");
+-		freqfp = fopen(DRIFTFILE, "w");
++		freqfp = fopen(conf->driftfile, "w");
+ 		return;
+ 	}
+ 
+@@ -654,7 +658,7 @@ readfreq(void)
+ 			d /= 1e6;	/* scale from ppm */
+ 			ntpd_adjfreq(d, 0);
+ 		} else
+-			log_warnx("main process: drift file %s is empty", DRIFTFILE);
++			log_warnx("main process: drift file %s is empty", conf->driftfile);
+ 	}
+ }
+ 
+@@ -671,7 +675,7 @@ writefreq(double d)
+ 	r = fprintf(freqfp, "%.3f\n", d * 1e6);	/* scale to ppm */
+ 	if (r < 0 || fflush(freqfp) != 0) {
+ 		if (warnonce) {
+-			log_warnx("main process: can't write drift file %s", DRIFTFILE);
++			log_warnx("main process: can't write drift file %s", conf->driftfile);
+ 			warnonce = 0;
+ 		}
+ 		clearerr(freqfp);
+@@ -679,7 +683,7 @@ writefreq(double d)
+ 	}
+         off = ftello(freqfp);
+         if (off == -1 || ftruncate(fileno(freqfp), off) == -1)
+-                log_warnx("main process: can't truncate drift file %s", DRIFTFILE);
++                log_warnx("main process: can't truncate drift file %s", conf->driftfile);
+         fsync(fileno(freqfp));
+ 	return 1;
+ }
+@@ -693,7 +697,7 @@ ctl_main(int argc, char *argv[])
+ 	int			 fd, n, done, ch, action;
+ 	char			*sockname;
+ 
+-	sockname = CTLSOCKET;
++	sockname = conf->ctlsocket;
+ 
+ 	if (argc < 2) {
+ 		usage();
+@@ -932,7 +936,7 @@ show_peer_msg(struct imsg *imsg, int cal
+ 
+ 	cpeer = (struct ctl_show_peer *)imsg->data;
+ 
+-	if (strlen(cpeer->peer_desc) > MAX_DISPLAY_WIDTH - 1)
++	if (strlen(cpeer->peer_desc) > conf->max_display_width - 1)
+ 		fatalx("ntpctl: NTP peer description is too long");
+ 
+ 	if (firsttime) {
+@@ -953,7 +957,7 @@ show_peer_msg(struct imsg *imsg, int cal
+ 	    cpeer->weight, cpeer->trustlevel, stratum,
+ 	    (long long)cpeer->next, (long long)cpeer->poll);
+ 
+-	if (cpeer->trustlevel >= TRUSTLEVEL_BADPEER)
++	if (cpeer->trustlevel >= conf->trustlevel_badpeer)
+ 		printf("  %12.3fms %9.3fms  %8.3fms\n", cpeer->offset,
+ 		    cpeer->delay, cpeer->jitter);
+ 	else
+@@ -982,7 +986,7 @@ show_sensor_msg(struct imsg *imsg, int c
+ 
+ 	csensor = (struct ctl_show_sensor *)imsg->data;
+ 
+-	if (strlen(csensor->sensor_desc) > MAX_DISPLAY_WIDTH - 1)
++	if (strlen(csensor->sensor_desc) > conf->max_display_width - 1)
+ 		fatalx("ntpctl: sensor description is too long");
+ 
+ 	if (firsttime) {
+--- a/src/ntp.c	2020-08-01 15:22:42.000000000 +0300
++++ b/src/ntp.c	2020-08-01 18:38:24.803591850 +0300
+@@ -55,7 +55,7 @@ int	ntp_dispatch_imsg_dns(void);
+ void	peer_add(struct ntp_peer *);
+ void	peer_remove(struct ntp_peer *);
+ int	inpool(struct sockaddr_storage *,
+-	    struct sockaddr_storage[MAX_SERVERS_DNS], size_t);
++	    struct sockaddr_storage[conf->max_servers_dns], size_t);
+ 
+ void
+ ntp_sighdlr(int sig)
+@@ -258,12 +258,12 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 					sent_cnt++;
+ 			}
+ 			if (p->deadline > 0 && p->deadline <= getmonotime()) {
+-				timeout = 300;
++				timeout = conf->interval_query_timeout;
+ 				log_debug("NTP client: NTP peer %s - no reply received in time, "
+ 				    "next query in %ds", log_sockaddr(
+ 				    (struct sockaddr *)&p->addr->ss), timeout);
+-				if (p->trustlevel >= TRUSTLEVEL_BADPEER &&
+-				    (p->trustlevel /= 2) < TRUSTLEVEL_BADPEER)
++				if (p->trustlevel >= conf->trustlevel_badpeer &&
++				    (p->trustlevel /= 2) < conf->trustlevel_badpeer)
+ 					log_info("NTP client: NTP peer %s is invalid now",
+ 					    log_sockaddr(
+ 					    (struct sockaddr *)&p->addr->ss));
+@@ -273,17 +273,17 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 				}
+ 				set_next(p, timeout);
+ 			}
+-			if (p->senderrors > MAX_SEND_ERRORS) {
++			if (p->senderrors > conf->max_send_errors) {
+ 				log_debug("NTP client: NTP peer %s - failed to send query, "
+ 				    "next query in %ds", log_sockaddr(
+ 				    (struct sockaddr *)&p->addr->ss),
+-				    INTERVAL_QUERY_PATHETIC);
++				    conf->interval_query_pathetic);
+ 				p->senderrors = 0;
+ 				if (client_nextaddr(p) == 1) {
+ 					peer_addr_head_clear(p);
+ 					client_nextaddr(p);
+ 				}
+-				set_next(p, INTERVAL_QUERY_PATHETIC);
++				set_next(p, conf->interval_query_pathetic);
+ 			}
+ 			if (p->next > 0 && p->next < nextaction)
+ 				nextaction = p->next;
+@@ -304,13 +304,13 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 		    (conf->trusted_sensors || constraint_cnt == 0 ||
+ 		    conf->constraint_median != 0)) {
+ 			if (last_sensor_scan == 0 ||
+-			    last_sensor_scan + SENSOR_SCAN_INTERVAL <= getmonotime()) {
++			    last_sensor_scan + conf->sensor_scan_interval <= getmonotime()) {
+ 				sensors_cnt = sensor_scan();
+ 				last_sensor_scan = getmonotime();
+ 			}
+ 			if (sensors_cnt == 0 &&
+-			    nextaction > last_sensor_scan + SENSOR_SCAN_INTERVAL)
+-				nextaction = last_sensor_scan + SENSOR_SCAN_INTERVAL;
++			    nextaction > last_sensor_scan + conf->sensor_scan_interval)
++				nextaction = last_sensor_scan + conf->sensor_scan_interval;
+ 			sensors_cnt = 0;
+ 			TAILQ_FOREACH(s, &conf->ntp_sensors, entry) {
+ 				if (conf->settime && s->offsets[0].offset)
+@@ -482,7 +482,7 @@ ntp_dispatch_imsg(void)
+ 
+ int
+ inpool(struct sockaddr_storage *a,
+-    struct sockaddr_storage old[MAX_SERVERS_DNS], size_t n)
++    struct sockaddr_storage old[conf->max_servers_dns], size_t n)
+ {
+ 	size_t i;
+ 
+@@ -506,7 +506,7 @@ int
+ ntp_dispatch_imsg_dns(void)
+ {
+ 	struct imsg		 imsg;
+-	struct sockaddr_storage	 existing[MAX_SERVERS_DNS];
++	struct sockaddr_storage	 existing[conf->max_servers_dns];
+ 	struct ntp_peer		*peer, *npeer, *tmp;
+ 	u_int16_t		 dlen;
+ 	u_char			*p;
+@@ -558,7 +558,7 @@ ntp_dispatch_imsg_dns(void)
+ 			if (dlen == 0) {	/* no data -> temp error */
+ 				log_warnx("DNS lookup temporary failed");
+ 				peer->state = STATE_DNS_TEMPFAIL;
+-				if (conf->tmpfail++ == TRIES_AUTO_DNSFAIL)
++				if (conf->tmpfail++ == conf->tries_auto_dnsfail)
+ 					priv_settime(0, "of DNS failures");
+ 				break;
+ 			}
+@@ -690,7 +690,7 @@ priv_adjfreq(double offset)
+ 	conf->freq.y += offset;
+ 	conf->freq.xx += curtime * curtime;
+ 
+-	if (conf->freq.samples % FREQUENCY_SAMPLES != 0)
++	if (conf->freq.samples % conf->frequency_samples != 0)
+ 		return;
+ 
+ 	freq =
+@@ -698,10 +698,10 @@ priv_adjfreq(double offset)
+ 	    /
+ 	    (conf->freq.xx - conf->freq.x * conf->freq.x / conf->freq.samples);
+ 
+-	if (freq > MAX_FREQUENCY_ADJUST)
+-		freq = MAX_FREQUENCY_ADJUST;
+-	else if (freq < -MAX_FREQUENCY_ADJUST)
+-		freq = -MAX_FREQUENCY_ADJUST;
++	if (freq > conf->max_frequency_adjust)
++		freq = conf->max_frequency_adjust;
++	else if (freq < -(conf->max_frequency_adjust))
++		freq = -(conf->max_frequency_adjust);
+ 
+ 	imsg_compose(ibuf_main, IMSG_ADJFREQ, 0, 0, -1, &freq, sizeof(freq));
+ 	conf->filters |= FILTER_ADJFREQ;
+@@ -724,7 +724,7 @@ priv_adjtime(void)
+ 	double			  offset_median;
+ 
+ 	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
+-		if (p->trustlevel < TRUSTLEVEL_BADPEER)
++		if (p->trustlevel < conf->trustlevel_badpeer)
+ 			continue;
+ 		if (!p->update.good)
+ 			return (1);
+@@ -744,7 +744,7 @@ priv_adjtime(void)
+ 		fatal("main process: can't allocate memory for time adjustment");
+ 
+ 	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
+-		if (p->trustlevel < TRUSTLEVEL_BADPEER)
++		if (p->trustlevel < conf->trustlevel_badpeer)
+ 			continue;
+ 		for (j = 0; j < p->weight; j++)
+ 			offsets[i++] = &p->update;
+@@ -784,12 +784,12 @@ priv_adjtime(void)
+ 	free(offsets);
+ 
+ 	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
+-		for (i = 0; i < OFFSET_ARRAY_SIZE; i++)
++		for (i = 0; i < conf->offset_array_size; i++)
+ 			p->reply[i].offset -= offset_median;
+ 		p->update.good = 0;
+ 	}
+ 	TAILQ_FOREACH(s, &conf->ntp_sensors, entry) {
+-		for (i = 0; i < SENSOR_OFFSETS; i++)
++		for (i = 0; i < conf->sensor_offsets; i++)
+ 			s->offsets[i].offset -= offset_median;
+ 		s->update.offset -= offset_median;
+ 	}
+@@ -841,13 +841,13 @@ update_scale(double offset)
+ 	if (offset < 0)
+ 		offset = -offset;
+ 
+-	if (offset > QSCALE_OFF_MAX || !conf->status.synced ||
++	if (offset > conf->qscale_off_max || !conf->status.synced ||
+ 	    conf->freq.num < 3)
+ 		conf->scale = 1;
+-	else if (offset < QSCALE_OFF_MIN)
+-		conf->scale = QSCALE_OFF_MAX / QSCALE_OFF_MIN;
++	else if (offset < conf->qscale_off_min)
++		conf->scale = conf->qscale_off_max / conf->qscale_off_min;
+ 	else
+-		conf->scale = QSCALE_OFF_MAX / offset;
++		conf->scale = conf->qscale_off_max / offset;
+ }
+ 
+ time_t
+@@ -865,7 +865,7 @@ error_interval(void)
+ {
+ 	time_t interval, r;
+ 
+-	interval = INTERVAL_QUERY_PATHETIC * QSCALE_OFF_MAX / QSCALE_OFF_MIN;
++	interval = conf->interval_query_pathetic * conf->qscale_off_max / conf->qscale_off_min;
+ 	r = arc4random_uniform(interval / 10);
+ 	return (interval + r);
+ }
+--- a/src/control.c	2020-07-31 23:23:56.000000000 +0300
++++ b/src/control.c	2020-08-01 11:49:36.991431574 +0300
+@@ -317,7 +317,7 @@ build_show_status(struct ctl_show_status
+ 
+ 	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
+ 		cs->peercnt++;
+-		if (p->trustlevel >= TRUSTLEVEL_BADPEER)
++		if (p->trustlevel >= conf->trustlevel_badpeer)
+ 			cs->valid_peers++;
+ 	}
+ 	TAILQ_FOREACH(s, &conf->ntp_sensors, entry) {
+@@ -362,7 +362,7 @@ build_show_peer(struct ctl_show_peer *cp
+ 
+ 	validdelaycnt = best = 0;
+ 	cp->offset = cp->delay = 0.0;
+-	for (shift = 0; shift < OFFSET_ARRAY_SIZE; shift++) {
++	for (shift = 0; shift < conf->offset_array_size; shift++) {
+ 		if (p->reply[shift].delay > 0.0) {
+ 			cp->offset += p->reply[shift].offset;
+ 			cp->delay += p->reply[shift].delay;
+@@ -381,7 +381,7 @@ build_show_peer(struct ctl_show_peer *cp
+ 
+ 	jittercnt = 0;
+ 	cp->jitter = 0.0;
+-	for (shift = 0; shift < OFFSET_ARRAY_SIZE; shift++) {
++	for (shift = 0; shift < conf->offset_array_size; shift++) {
+ 		if (p->reply[shift].delay > 0.0 && shift != best) {
+ 			cp->jitter += square(p->reply[shift].delay -
+ 			    p->reply[best].delay);
+@@ -393,7 +393,7 @@ build_show_peer(struct ctl_show_peer *cp
+ 	cp->jitter = sqrt(cp->jitter);
+ 
+ 	if (p->shift == 0)
+-		shift = OFFSET_ARRAY_SIZE - 1;
++		shift = conf->offset_array_size - 1;
+ 	else
+ 		shift = p->shift - 1;
+ 
+@@ -424,14 +424,14 @@ build_show_sensor(struct ctl_show_sensor
+ 
+ 	now = getmonotime();
+ 
+-	memcpy(&refid, SENSOR_DEFAULT_REFID, sizeof(refid));
++	memcpy(&refid, conf->sensor_default_refid, sizeof(refid));
+ 	refid = refid == s->refid ? 0 : s->refid;
+ 
+ 	snprintf(cs->sensor_desc, sizeof(cs->sensor_desc),
+ 	    "%s  %.4s", s->device, (char *)&refid);
+ 
+ 	if (s->shift == 0)
+-		shift = SENSOR_OFFSETS - 1;
++		shift = conf->sensor_offsets - 1;
+ 	else
+ 		shift = s->shift - 1;
+ 
+@@ -445,7 +445,7 @@ build_show_sensor(struct ctl_show_sensor
+ 	cs->good = s->update.good;
+ 	cs->stratum = s->offsets[shift].status.stratum;
+ 	cs->next = s->next - now < 0 ? 0 : s->next - now;
+-	cs->poll = SENSOR_QUERY_INTERVAL;
++	cs->poll = conf->sensor_query_interval;
+ 	cs->offset = s->offsets[shift].offset * 1000.0;
+ 	cs->correction = (double)s->correction / 1000.0;
+ }
+--- a/src/constraint.c	2020-08-02 01:57:36.430286127 +0300
++++ b/src/constraint.c	2020-08-02 01:57:57.020286149 +0300
+@@ -165,8 +165,8 @@ constraint_query(struct constraint *cstr
+ 		/* Proceed and query the time */
+ 		break;
+ 	case STATE_DNS_TEMPFAIL:
+-		if (now > cstr->last + (cstr->dnstries >= TRIES_AUTO_DNSFAIL ?
+-		    CONSTRAINT_RETRY_INTERVAL : INTERVAL_AUIO_DNSFAIL)) {
++		if (now > cstr->last + (cstr->dnstries >= conf->tries_auto_dnsfail ?
++		    conf->constraint_retry_interval : conf->interval_auto_dnsfail)) {
+ 			cstr->dnstries++;
+ 			/* Retry resolving the address */
+ 			constraint_init(cstr);
+@@ -174,7 +174,7 @@ constraint_query(struct constraint *cstr
+ 		}
+ 		return (-1);
+ 	case STATE_QUERY_SENT:
+-		if (cstr->last + CONSTRAINT_SCAN_TIMEOUT > now) {
++		if (cstr->last + conf->constraint_scan_timeout > now) {
+ 			/* The caller should expect a reply */
+ 			return (0);
+ 		}
+@@ -186,7 +186,7 @@ constraint_query(struct constraint *cstr
+ 		cstr->state = STATE_TIMEOUT;
+ 		return (-1);
+ 	case STATE_INVALID:
+-		if (cstr->last + CONSTRAINT_SCAN_INTERVAL > now) {
++		if (cstr->last + conf->constraint_scan_interval > now) {
+ 			/* Nothing to do */
+ 			return (-1);
+ 		}
+@@ -745,7 +745,7 @@ constraint_msg_close(u_int32_t id, u_int
+ 		log_debug("constraint %s: no reply"
+ 		    " received in time, next query in %ds",
+ 		    log_sockaddr((struct sockaddr *)
+-		    &cstr->addr->ss), CONSTRAINT_SCAN_INTERVAL);
++		    &cstr->addr->ss), conf->constraint_scan_interval);
+ 		
+ 		cnt = 0;
+ 		TAILQ_FOREACH(tmp, &conf->constraints, entry)
+@@ -920,9 +920,9 @@ constraint_check(double val)
+ 	tv.tv_usec = 0;
+ 	diff = fabs(val - gettime_from_timeval(&tv));
+ 
+-	if (diff > CONSTRAINT_MARGIN) {
++	if (diff > conf->constraint_margin) {
+ 		if (conf->constraint_errors++ >
+-		    (CONSTRAINT_ERROR_MARGIN * peer_cnt)) {
++		    (conf->constraint_error_margin * peer_cnt)) {
+ 			constraint_reset();
+ 		}
+ 
+@@ -999,7 +999,7 @@ int
+ httpsdate_request(struct httpsdate *httpsdate, struct timeval *when)
+ {
+ 	char	 timebuf1[32], timebuf2[32];
+-	size_t	 outlen = 0, maxlength = CONSTRAINT_MAXHEADERLENGTH, len;
++	size_t	 outlen = 0, maxlength = conf->constraint_maxheaderlength, len;
+ 	char	*line, *p, *buf;
+ 	time_t	 httptime, notbefore, notafter;
+ 	struct tm *tm;
+--- a/src/config.c	2020-08-01 01:02:14.000000000 +0300
++++ b/src/config.c	2020-08-01 11:35:05.758097319 +0300
+@@ -115,7 +115,7 @@ host_dns1(const char *s, struct ntp_addr
+ 		return (-1);
+ 	}
+ 
+-	for (res = res0; res && cnt < MAX_SERVERS_DNS; res = res->ai_next) {
++	for (res = res0; res && cnt < conf->max_servers_dns; res = res->ai_next) {
+ 		if (res->ai_family != AF_INET &&
+ 		    res->ai_family != AF_INET6)
+ 			continue;
+--- a/src/client.c	2020-08-02 02:04:55.666953258 +0300
++++ b/src/client.c	2020-08-02 02:05:18.690286616 +0300
+@@ -57,7 +57,7 @@ client_peer_init(struct ntp_peer *p)
+ 	p->query->msg.status = MODE_CLIENT | (NTP_VERSION << 3);
+ 	p->state = STATE_NONE;
+ 	p->shift = 0;
+-	p->trustlevel = TRUSTLEVEL_PATHETIC;
++	p->trustlevel = conf->trustlevel_pathetic;
+ 	p->lasterror = 0;
+ 	p->senderrors = 0;
+ 
+@@ -120,7 +120,7 @@ client_nextaddr(struct ntp_peer *p)
+ 	}
+ 
+ 	p->shift = 0;
+-	p->trustlevel = TRUSTLEVEL_PATHETIC;
++	p->trustlevel = conf->trustlevel_pathetic;
+ 
+ 	if (p->addr == NULL) {
+ 		p->addr = p->addr_head.a;
+@@ -148,10 +148,10 @@ client_query(struct ntp_peer *p)
+ 
+ 	if (p->addr == NULL && client_nextaddr(p) == -1) {
+ 		if (conf->settime)
+-			set_next(p, INTERVAL_AUIO_DNSFAIL);
++			set_next(p, conf->interval_auto_dnsfail);
+ 		else
+-			set_next(p, MAXIMUM(SETTIME_TIMEOUT,
+-			    scale_interval(INTERVAL_QUERY_AGGRESSIVE)));
++			set_next(p, MAXIMUM(conf->settime_timeout,
++			    scale_interval(conf->interval_query_aggressive)));
+ 		return (0);
+ 	}
+ 
+@@ -200,8 +200,8 @@ client_query(struct ntp_peer *p)
+ 				client_nextaddr(p);
+ 				if (p->addr == NULL)
+ 					p->addr = p->addr_head.a;
+-				set_next(p, MAXIMUM(SETTIME_TIMEOUT,
+-				    scale_interval(INTERVAL_QUERY_AGGRESSIVE)));
++				set_next(p, MAXIMUM(conf->settime_timeout,
++				    scale_interval(conf->interval_query_aggressive)));
+ 				p->senderrors++;
+ 				return (-1);
+ 			} else
+@@ -239,14 +239,14 @@ client_query(struct ntp_peer *p)
+ 
+ 	if (ntp_sendmsg(p->query->fd, NULL, &p->query->msg) == -1) {
+ 		p->senderrors++;
+-		set_next(p, INTERVAL_QUERY_PATHETIC);
+-		p->trustlevel = TRUSTLEVEL_PATHETIC;
++		set_next(p, conf->interval_query_pathetic);
++		p->trustlevel = conf->trustlevel_pathetic;
+ 		return (-1);
+ 	}
+ 
+ 	p->senderrors = 0;
+ 	p->state = STATE_QUERY_SENT;
+-	set_deadline(p, QUERYTIME_MAX);
++	set_deadline(p, conf->querytime_max);
+ 
+ 	return (0);
+ }
+@@ -263,7 +263,7 @@ void
+ handle_auto(uint8_t trusted, double offset)
+ {
+ 	static int count;
+-	static double v[AUTO_REPLIES];
++	double v[conf->auto_replies];
+ 
+ 	/*
+ 	 * It happens the (constraint) resolves initially fail, don't give up
+@@ -272,7 +272,7 @@ handle_auto(uint8_t trusted, double offs
+ 	if (!trusted && conf->constraint_median == 0)
+ 		return;
+ 
+-	if (offset < AUTO_THRESHOLD) {
++	if (offset < conf->auto_threshold) {
+ 		/* don't bother */
+ 		priv_settime(0, "NTP client: NTP peer offset is negative or close enough");
+ 		return;
+@@ -281,13 +281,13 @@ handle_auto(uint8_t trusted, double offs
+ 	v[count++] = offset;
+ 	if (count < AUTO_REPLIES)
+ 		return;
+-	
++
+ 	/* we have enough */
+ 	qsort(v, count, sizeof(double), auto_cmp);
+-	if (AUTO_REPLIES % 2 == 0)
+-		offset = (v[AUTO_REPLIES / 2 - 1] + v[AUTO_REPLIES / 2]) / 2;
++	if (conf->auto_replies % 2 == 0)
++		offset = (v[conf->auto_replies / 2 - 1] + v[conf->auto_replies / 2]) / 2;
+ 	else
+-		offset = v[AUTO_REPLIES / 2];
++		offset = v[conf->auto_replies / 2];
+ 	priv_settime(offset, "");
+ }
+ 
+@@ -451,22 +451,22 @@ client_dispatch(struct ntp_peer *p, u_in
+ 	} else
+ 		p->reply[p->shift].status.send_refid = msg.xmttime.fractionl;
+ 
+-	if (p->trustlevel < TRUSTLEVEL_PATHETIC)
+-		interval = scale_interval(INTERVAL_QUERY_PATHETIC);
+-	else if (p->trustlevel < TRUSTLEVEL_AGGRESSIVE)
++	if (p->trustlevel < conf->trustlevel_pathetic)
++		interval = scale_interval(conf->interval_query_pathetic);
++	else if (p->trustlevel < conf->trustlevel_aggressive)
+ 		interval = (conf->settime && conf->automatic) ?
+-		    INTERVAL_QUERY_ULTRA_VIOLENCE :
+-		    scale_interval(INTERVAL_QUERY_AGGRESSIVE);
++		    conf->interval_query_ultra_violence :
++		    scale_interval(conf->interval_query_aggressive);
+ 	else
+-		interval = scale_interval(INTERVAL_QUERY_NORMAL);
++		interval = scale_interval(conf->interval_query_normal);
+ 
+ 	set_next(p, interval);
+ 	p->state = STATE_REPLY_RECEIVED;
+ 
+ 	/* every received reply which we do not discard increases trust */
+-	if (p->trustlevel < TRUSTLEVEL_MAX) {
+-		if (p->trustlevel < TRUSTLEVEL_BADPEER &&
+-		    p->trustlevel + 1 >= TRUSTLEVEL_BADPEER)
++	if (p->trustlevel < conf->trustlevel_max) {
++		if (p->trustlevel < conf->trustlevel_badpeer &&
++		    p->trustlevel + 1 >= conf->trustlevel_badpeer)
+ 			log_info("NTP client: NTP peer %s is valid now",
+ 			    log_sockaddr((struct sockaddr *)&p->addr->ss));
+ 		p->trustlevel++;
+@@ -486,7 +486,7 @@ client_dispatch(struct ntp_peer *p, u_in
+ 			priv_settime(p->reply[p->shift].offset, "");
+ 	}
+ 
+-	if (++p->shift >= OFFSET_ARRAY_SIZE)
++	if (++p->shift >= conf->offset_array_size)
+ 		p->shift = 0;
+ 
+ 	return (0);
+@@ -504,13 +504,13 @@ client_update(struct ntp_peer *p)
+ 	 * invalidate it and all older ones
+ 	 */
+ 
+-	for (i = 0; good == 0 && i < OFFSET_ARRAY_SIZE; i++)
++	for (i = 0; good == 0 && i < conf->offset_array_size; i++)
+ 		if (p->reply[i].good) {
+ 			good++;
+ 			best = i;
+ 		}
+ 
+-	for (; i < OFFSET_ARRAY_SIZE; i++)
++	for (; i < conf->offset_array_size; i++)
+ 		if (p->reply[i].good) {
+ 			good++;
+ 			if (p->reply[i].delay < p->reply[best].delay)
+@@ -522,7 +522,7 @@ client_update(struct ntp_peer *p)
+ 
+ 	memcpy(&p->update, &p->reply[best], sizeof(p->update));
+ 	if (priv_adjtime() == 0) {
+-		for (i = 0; i < OFFSET_ARRAY_SIZE; i++)
++		for (i = 0; i < conf->offset_array_size; i++)
+ 			if (p->reply[i].rcvd <= p->reply[best].rcvd)
+ 				p->reply[i].good = 0;
+ 	}
+--- a/src/ntpd.h	2020-08-01 01:27:06.000000000 +0300
++++ b/src/ntpd.h	2020-08-01 17:13:17.616919800 +0300
+@@ -56,6 +56,8 @@
+ #define	INTERVAL_QUERY_AGGRESSIVE	5
+ #define	INTERVAL_QUERY_ULTRA_VIOLENCE	1	/* used at startup for auto */
+ 
++#define INTERVAL_QUERY_TIMEOUT	300
++
+ #define	TRUSTLEVEL_BADPEER		6
+ #define	TRUSTLEVEL_PATHETIC		2
+ #define	TRUSTLEVEL_AGGRESSIVE		8
+@@ -69,7 +71,7 @@
+ #define	QUERYTIME_MAX		15	/* single query might take n secs max */
+ #define	OFFSET_ARRAY_SIZE	8
+ #define	SENSOR_OFFSETS		6
+-#define	SETTIME_TIMEOUT		15	/* max seconds to wait with -s */
++#define	SETTIME_TIMEOUT		100	/* max seconds to wait when settime == 1 */
+ #define	LOG_NEGLIGIBLE_ADJTIME	32	/* negligible drift to not log (ms) */
+ #define	LOG_NEGLIGIBLE_ADJFREQ	0.05	/* negligible rate to not log (ppm) */
+ #define	FREQUENCY_SAMPLES	8	/* samples for est. of permanent drift */
+@@ -80,7 +82,7 @@
+ #define FILTER_ADJFREQ		0x01	/* set after doing adjfreq */
+ #define AUTO_REPLIES    	4	/* # of ntp replies we want for auto */
+ #define AUTO_THRESHOLD		60	/* dont bother auto setting < this */
+-#define INTERVAL_AUIO_DNSFAIL	1	/* DNS tmpfail interval for auto */
++#define INTERVAL_AUTO_DNSFAIL	1	/* DNS tmpfail interval for auto */
+ #define TRIES_AUTO_DNSFAIL	4	/* DNS tmpfail quick retries */
+ 
+ 
+@@ -268,6 +270,63 @@ struct ntpd_conf {
+ 	size_t						ca_len;
+ 	int						tmpfail;
+ 	char						*pid_file;
++
++	char						*ntpd_user;
++	char						*driftfile;
++	char						*ctlsocket;
++
++	int						interval_query_normal;
++	int						interval_query_pathetic;
++	int						interval_query_aggressive;
++	int						interval_query_ultra_violence;
++
++	int						interval_query_timeout;
++
++	int						trustlevel_badpeer;
++	int						trustlevel_pathetic;
++	int						trustlevel_aggressive;
++	int						trustlevel_max;
++	
++	int					max_servers_dns;
++	
++	double				qscale_off_min;
++	double				qscale_off_max;
++
++	int						querytime_max;
++	int						offset_array_size;
++	int						sensor_offsets;
++	int						settime_timeout;
++
++	int						log_negligible_adjtime;
++	double						log_negligible_adjfreq;
++
++	int						frequency_samples;
++	double						max_frequency_adjust;
++
++	int						max_send_errors;
++
++	int						max_display_width;
++
++	u_int8_t						filter_adjfreq;
++	
++	int						auto_replies;
++	int						auto_threshold;
++	int						interval_auto_dnsfail;
++	int						tries_auto_dnsfail;
++
++	int						sensor_query_interval_settime;
++	int						sensor_data_maxage;
++	int						sensor_query_interval;
++	int						sensor_scan_interval;
++	char					*sensor_default_refid;
++
++	double						constraint_error_margin;
++	int						constraint_retry_interval;
++	int						constraint_scan_interval;
++	int						constraint_scan_timeout;
++	double						constraint_margin;
++
++	int						constraint_maxheaderlength;
+ };
+ 
+ struct ctl_show_status {
+@@ -363,6 +422,7 @@ extern struct ctl_conns  ctl_conns;
+ 
+ /* parse.y */
+ int	 parse_config(const char *, struct ntpd_conf *);
++void	print_conf(struct ntpd_conf *);
+ 
+ /* config.c */
+ void			 host(const char *, struct ntp_addr **);
+--- a/src/parse.y	2020-08-01 01:51:28.000000000 +0300
++++ b/src/parse.y	2020-08-01 21:17:48.293601924 +0300
+@@ -52,7 +52,6 @@ int		 yyerror(const char *, ...)
+     __attribute__((__format__ (printf, 1, 2)))
+     __attribute__((__nonnull__ (1)));
+ int		 kw_cmp(const void *, const void *);
+-int		 lookup(char *);
+ int		 lgetc(int);
+ int		 lungetc(int);
+ int		 findeol(void);
+@@ -70,12 +69,15 @@ struct opts {
+ 	int		trusted;
+ 	char		*refstr;
+ 	int		port;
++	int		pos_num;
++	double		pos_decimal;
+ } opts;
+ void		opts_default(void);
+ 
+ typedef struct {
+ 	union {
+ 		int64_t			 number;
++		double			decimal;
+ 		char			*string;
+ 		struct ntp_addr_wrap	*addr;
+ 		struct opts		 opts;
+@@ -89,8 +91,68 @@ typedef struct {
+ %token	SERVER SERVERS SENSOR CORRECTION RTABLE REFID STRATUM WEIGHT
+ %token	ERROR
+ %token	PORT
++
++%token	_NTPD_USER
++%token	_DRIFTFILE
++%token	_CTLSOCKET
++
++%token	_INTERVAL_QUERY_NORMAL
++%token	_INTERVAL_QUERY_PATHETIC
++%token	_INTERVAL_QUERY_AGGRESSIVE
++%token	_INTERVAL_QUERY_ULTRA_VIOLENCE
++
++%token	_INTERVAL_QUERY_TIMEOUT
++
++%token	_TRUSTLEVEL_BADPEER
++%token	_TRUSTLEVEL_PATHETIC
++%token	_TRUSTLEVEL_AGGRESSIVE
++%token	_TRUSTLEVEL_MAX
++
++%token	_MAX_SERVERS_DNS
++
++%token _QSCALE_OFF_MIN
++%token _QSCALE_OFF_MAX
++
++%token	_QUERYTIME_MAX
++%token	_OFFSET_ARRAY_SIZE
++%token	_SENSOR_OFFSETS
++%token	_SETTIME_TIMEOUT
++
++%token	_LOG_NEGLIGIBLE_ADJTIME
++%token	_LOG_NEGLIGIBLE_ADJFREQ
++
++%token	_FREQUENCY_SAMPLES
++%token	_MAX_FREQUENCY_ADJUST
++
++%token	_MAX_SEND_ERRORS
++
++%token	_MAX_DISPLAY_WIDTH
++
++%token	_FILTER_ADJFREQ
++
++%token	_AUTO_REPLIES
++%token	_AUTO_THRESHOLD
++
++%token	_INTERVAL_AUTO_DNSFAIL
++%token	_TRIES_AUTO_DNSFAIL
++
++%token	_SENSOR_DATA_MAXAGE
++%token	_SENSOR_QUERY_INTERVAL
++%token	_SENSOR_SCAN_INTERVAL
++
++%token	_SENSOR_DEFAULT_REFID
++
++%token	_CONSTRAINT_ERROR_MARGIN
++%token	_CONSTRAINT_RETRY_INTERVAL
++%token	_CONSTRAINT_SCAN_INTERVAL
++%token	_CONSTRAINT_SCAN_TIMEOUT
++%token	_CONSTRAINT_MARGIN
++
++%token	_CONSTRAINT_MAXHEADERLENGTH
++
+ %token	<v.string>		STRING
+ %token	<v.number>		NUMBER
++%token	<v.decimal>		NUMBER_DOUBLE
+ %type	<v.addr>		address url urllist
+ %type	<v.opts>		listen_opts listen_opts_l listen_opt
+ %type	<v.opts>		server_opts server_opts_l server_opt
+@@ -103,6 +165,9 @@ typedef struct {
+ %type	<v.opts>		weight
+ %type	<v.opts>		trusted
+ %type	<v.opts>		port
++
++%type	<v.opts>		pos_num
++%type	<v.opts>		pos_decimal
+ %%
+ 
+ grammar		: /* empty */
+@@ -385,6 +450,171 @@ main		: LISTEN ON address listen_opts	{
+ 			free($2);
+ 			TAILQ_INSERT_TAIL(&conf->ntp_conf_sensors, s, entry);
+ 		}
++
++		| _NTPD_USER STRING {
++			conf->ntpd_user = $2;
++		}
++		| _DRIFTFILE STRING {
++			conf->driftfile = $2;
++		}
++		| _CTLSOCKET STRING {
++			conf->ctlsocket = $2;
++		}
++
++		| _INTERVAL_QUERY_NORMAL pos_num {
++			conf->interval_query_normal = $2.pos_num;
++		}
++		| _INTERVAL_QUERY_PATHETIC pos_num {
++			conf->interval_query_pathetic = $2.pos_num;
++		}
++		| _INTERVAL_QUERY_AGGRESSIVE pos_num {
++			conf->interval_query_aggressive = $2.pos_num;
++		}
++		| _INTERVAL_QUERY_ULTRA_VIOLENCE pos_num {
++			conf->interval_query_ultra_violence = $2.pos_num;
++		}
++
++		| _INTERVAL_QUERY_TIMEOUT pos_num {
++			conf->interval_query_timeout = $2.pos_num;
++		}
++
++		| _TRUSTLEVEL_BADPEER pos_num {
++			conf->trustlevel_badpeer = $2.pos_num;
++		}
++		| _TRUSTLEVEL_PATHETIC pos_num {
++			conf->trustlevel_pathetic = $2.pos_num;
++		}
++		| _TRUSTLEVEL_AGGRESSIVE pos_num {
++			conf->trustlevel_aggressive = $2.pos_num;
++		}
++		| _TRUSTLEVEL_MAX pos_num {
++			conf->trustlevel_max = $2.pos_num;
++		}
++
++		| _MAX_SERVERS_DNS pos_num {
++			conf->max_servers_dns = $2.pos_num;
++		}
++
++		| _QSCALE_OFF_MIN pos_decimal {
++			conf->qscale_off_min = $2.pos_decimal;
++		}
++		| _QSCALE_OFF_MAX pos_decimal {
++			conf->qscale_off_max = $2.pos_decimal;
++		}
++
++		| _QUERYTIME_MAX pos_num {
++			conf->querytime_max = $2.pos_num;
++		}
++		| _OFFSET_ARRAY_SIZE pos_num {
++			conf->offset_array_size = $2.pos_num;
++		}
++		| _SENSOR_OFFSETS pos_num {
++			conf->sensor_offsets = $2.pos_num;
++		}
++		| _SETTIME_TIMEOUT pos_num {
++			conf->settime_timeout = $2.pos_num;
++		}
++
++		| _LOG_NEGLIGIBLE_ADJTIME pos_num {
++			conf->log_negligible_adjtime = $2.pos_num;
++		}
++		| _LOG_NEGLIGIBLE_ADJFREQ pos_decimal {
++			conf->log_negligible_adjfreq = $2.pos_decimal;
++		}
++
++		| _FREQUENCY_SAMPLES pos_num {
++			conf->frequency_samples = $2.pos_num;
++		}
++		| _MAX_FREQUENCY_ADJUST pos_decimal {
++			conf->max_frequency_adjust = $2.pos_decimal;
++		}
++
++		| _MAX_SEND_ERRORS pos_num {
++			conf->max_send_errors = $2.pos_num;
++		}
++
++		| _MAX_DISPLAY_WIDTH pos_num {
++			conf->max_display_width = $2.pos_num;
++		}
++
++		| _AUTO_REPLIES pos_num {
++			conf->auto_replies = $2.pos_num;
++		}
++		| _AUTO_THRESHOLD pos_num {
++			conf->auto_threshold = $2.pos_num;
++		}
++		| _INTERVAL_AUTO_DNSFAIL pos_num {
++			conf->interval_auto_dnsfail = $2.pos_num;
++		}
++		| _TRIES_AUTO_DNSFAIL pos_num {
++			conf->tries_auto_dnsfail = $2.pos_num;
++		}
++
++		| _FILTER_ADJFREQ STRING {
++			u_int8_t	val;
++
++			if (strcmp("true", $2) == 0) {
++				val = 0x01;
++			} else if (strcmp("false", $2) == 0) {
++				val = 0x00;
++			} else {
++				yyerror("option filter_adjfreq expects either 'true' or 'false'");
++				YYERROR;
++			}
++
++			conf->filter_adjfreq = val;
++		}
++
++		| _SENSOR_DATA_MAXAGE pos_num {
++			conf->sensor_data_maxage = $2.pos_num;
++		}
++		| _SENSOR_QUERY_INTERVAL pos_num {
++			conf->sensor_query_interval = $2.pos_num;
++		}
++		| _SENSOR_SCAN_INTERVAL pos_num {
++			conf->sensor_scan_interval = $2.pos_num;
++		}
++
++		| _SENSOR_DEFAULT_REFID STRING {
++			conf->sensor_default_refid = $2;
++		}
++
++		| _CONSTRAINT_ERROR_MARGIN pos_num {
++			conf->constraint_error_margin = $2.pos_num;
++		}
++		| _CONSTRAINT_RETRY_INTERVAL pos_num {
++			conf->constraint_retry_interval = $2.pos_num;
++		}
++		| _CONSTRAINT_SCAN_INTERVAL pos_num {
++			conf->constraint_scan_interval = $2.pos_num;
++		}
++		| _CONSTRAINT_SCAN_TIMEOUT pos_num {
++			conf->constraint_scan_timeout = $2.pos_num;
++		}
++		| _CONSTRAINT_MARGIN pos_num {
++			conf->constraint_margin = (double)$2.pos_num;
++		}
++		| _CONSTRAINT_MAXHEADERLENGTH pos_num {
++			conf->constraint_maxheaderlength = $2.pos_num;
++		}
++		;
++
++pos_num		: NUMBER {
++			if ($1 < 0) {
++				yyerror("must be a positive number");
++				YYERROR;
++			}
++			$$.pos_num = $1;
++		}
++		;
++
++pos_decimal		: NUMBER_DOUBLE {
++			if ($1 < 0) {
++				yyerror("must be a positive decimal number");
++				YYERROR;
++			}
++			$$.pos_decimal = $1;
++		}
+ 		;
+ 
+ address		: STRING		{
+@@ -587,8 +817,12 @@ opts_default(void)
+ struct keywords {
+ 	const char	*k_name;
+ 	int		 k_val;
++	const char	*k_times;
++	int		k_seen;
+ };
+ 
++struct keywords		 *lookup(char *);
++
+ int
+ yyerror(const char *fmt, ...)
+ {
+@@ -611,37 +845,82 @@ kw_cmp(const void *k, const void *e)
+ 	return (strcmp(k, ((const struct keywords *)e)->k_name));
+ }
+ 
+-int
++struct keywords *
+ lookup(char *s)
+ {
+-	/* this has to be sorted always */
+-	static const struct keywords keywords[] = {
+-		{ "constraint",		CONSTRAINT},
+-		{ "constraints",	CONSTRAINTS},
+-		{ "correction",		CORRECTION},
+-		{ "from",		FROM},
+-		{ "listen",		LISTEN},
+-		{ "on",			ON},
+-		{ "port",		PORT},
+-		{ "query",		QUERY},
+-		{ "refid",		REFID},
+-		{ "rtable",		RTABLE},
+-		{ "sensor",		SENSOR},
+-		{ "server",		SERVER},
+-		{ "servers",		SERVERS},
+-		{ "stratum",		STRATUM},
+-		{ "trusted",		TRUSTED},
+-		{ "weight",		WEIGHT}
++	/* NOTE: this has to be sorted always! */
++	// NOTE: Because dynamic k_seen has been added, const definition is removed
++	// from this data structure. If you want to keep const, already set k_seen
++	// value can't be changed from its initial value.
++	static struct keywords keywords[] = {
++		{ "auto_replies",	_AUTO_REPLIES,	"single" },
++		{ "auto_threshold",	_AUTO_THRESHOLD,	"single" },
++		{ "constraint",		CONSTRAINT,	"multiple" },
++		{ "constraint_error_margin",		_CONSTRAINT_ERROR_MARGIN,	"single" },
++		{ "constraint_margin",		_CONSTRAINT_MARGIN,	"single" },
++		{ "constraint_maxheaderlength",		_CONSTRAINT_MAXHEADERLENGTH,	"single" },
++		{ "constraint_retry_interval",	_CONSTRAINT_RETRY_INTERVAL,	"single" },
++		{ "constraint_scan_interval",		_CONSTRAINT_SCAN_INTERVAL,	"single" },
++		{ "constraint_scan_timeout",		_CONSTRAINT_SCAN_TIMEOUT,	"single" },
++		{ "constraints",	CONSTRAINTS,	"multiple" },
++		{ "correction",		CORRECTION,	"multiple" },
++		{ "ctlsocket",		_CTLSOCKET,	"single" },
++		{ "driftfile",		_DRIFTFILE,	"single" },
++		{ "filter_adjfreq",		_FILTER_ADJFREQ,	"single" },
++		{ "frequency_samples",		_FREQUENCY_SAMPLES,	"single" },
++		{ "from",		FROM,	"multiple" },
++		{ "interval_auto_dnsfail",	_INTERVAL_AUTO_DNSFAIL,	"single" },
++		{ "interval_query_aggressive",		_INTERVAL_QUERY_AGGRESSIVE,	"single" },
++		{ "interval_query_normal",		_INTERVAL_QUERY_NORMAL,	"single" },
++		{ "interval_query_pathetic",		_INTERVAL_QUERY_PATHETIC,	"single" },
++		{ "interval_query_timeout",		_INTERVAL_QUERY_TIMEOUT,	"single" },
++		{ "interval_query_ultra_violence",		_INTERVAL_QUERY_ULTRA_VIOLENCE,	"single" },
++		{ "listen",		LISTEN,	"multiple" },
++		{ "log_negligible_adjfreq",		_LOG_NEGLIGIBLE_ADJFREQ,	"single" },
++		{ "log_negligible_adjtime",		_LOG_NEGLIGIBLE_ADJTIME,	"single" },
++		{ "max_display_width",		_MAX_DISPLAY_WIDTH,	"single" },
++		{ "max_frequency_adjust",		_MAX_FREQUENCY_ADJUST, "single" },
++		{ "max_send_errors",		_MAX_SEND_ERRORS,	"single" },
++		{ "max_servers_dns",		_MAX_SERVERS_DNS,	"single" },
++		{ "ntpd_user",		_NTPD_USER,	"single" },
++		{ "on",			ON,	"multiple" },
++		{ "port",		PORT,	"multiple" },
++		{ "qscale_off_min", _QSCALE_OFF_MIN,	"single" },
++		{ "qscale_off_max", _QSCALE_OFF_MAX,	"single" },
++		{ "query",		QUERY,	"multiple" },
++		{ "querytime_max",		_QUERYTIME_MAX,	"single" },
++		{ "refid",		REFID,	"multiple" },
++		{ "rtable",		RTABLE,	"multiple" },
++		{ "sensor",		SENSOR,	"multiple" },
++		{ "sensor_data_maxage",		_SENSOR_DATA_MAXAGE,	"single" },
++		{ "sensor_default_refid",		_SENSOR_DEFAULT_REFID,	"single" },
++		{ "sensor_offsets",		_SENSOR_OFFSETS,	"single" },
++		{ "sensor_query_interval",		_SENSOR_QUERY_INTERVAL,	"single" },
++		{ "sensor_scan_interval",		_SENSOR_SCAN_INTERVAL,	"single" },
++		{ "server",		SERVER,	"multiple" },
++		{ "servers",		SERVERS,	"multiple" },
++		{ "settime_timeout",		_SETTIME_TIMEOUT,	"single" },
++		{ "stratum",		STRATUM,	"multiple" },
++		{ "tries_auto_dnsfail",	_TRIES_AUTO_DNSFAIL,	"single" },
++		{ "trusted",		TRUSTED,	"multiple" },
++		{ "trustlevel_aggressive",		_TRUSTLEVEL_AGGRESSIVE,	"single" },
++		{ "trustlevel_badpeer",		_TRUSTLEVEL_BADPEER,	"single" },
++		{ "trustlevel_max",		_TRUSTLEVEL_MAX,	"single" },
++		{ "trustlevel_pathetic",		_TRUSTLEVEL_PATHETIC,	"single" },
++		{ "weight",		WEIGHT,	"multiple" },
+ 	};
+-	const struct keywords	*p;
++	struct keywords	*p;
+ 
++	// Compare supplied character buffer and keywords[0]
+ 	p = bsearch(s, keywords, sizeof(keywords)/sizeof(keywords[0]),
+ 	    sizeof(keywords[0]), kw_cmp);
+ 
+-	if (p)
+-		return (p->k_val);
+-	else
+-		return (STRING);
++	/*
++	* When having non-keyword (i.e. invalid keyword) value,
++	* we return NULL. Therefore, return value must separately
++	* be checked if it is used anywhere.
++	*/
++	return (p);
+ }
+ 
+ #define MAXPUSHBACK	128
+@@ -743,8 +1022,9 @@ yylex(void)
+ {
+ 	u_char	 buf[8096];
+ 	u_char	*p;
++	char *derr;
+ 	int	 quotec, next, c;
+-	int	 token;
++	struct keywords	 *token;
+ 
+ 	p = buf;
+ 	while ((c = lgetc(0)) == ' ' || c == '\t')
+@@ -805,7 +1085,7 @@ yylex(void)
+ 				yyerror("string is too long");
+ 				return (findeol());
+ 			}
+-		} while ((c = lgetc(0)) != EOF && isdigit(c));
++		} while ((c = lgetc(0)) != EOF && (isdigit(c) || c == '.'));
+ 		lungetc(c);
+ 		if (p == buf + 1 && buf[0] == '-')
+ 			goto nodigits;
+@@ -816,10 +1096,23 @@ yylex(void)
+ 			yylval.v.number = strtonum(buf, LLONG_MIN,
+ 			    LLONG_MAX, &errstr);
+ 			if (errstr) {
++
++ 				// Fall back. Check if it is actually a decimal number
++				yylval.v.decimal = strtod(buf, &derr);
++				if (*derr != 0) {
++					// Fall back. Assume it is actually a string (e.g. IP address)
++					yylval.v.string = strdup(buf);
++					return (STRING);
++					// If not a string, syntax error is returned in further checks
++				}
++				return (NUMBER_DOUBLE);
++				/*
+ 				yyerror("\"%s\" invalid number: %s",
+ 				    buf, errstr);
+ 				return (findeol());
++				*/
+ 			}
++
+ 			return (NUMBER);
+ 		} else {
+ nodigits:
+@@ -847,11 +1140,47 @@ nodigits:
+ 		} while ((c = lgetc(0)) != EOF && (allowed_in_string(c)));
+ 		lungetc(c);
+ 		*p = '\0';
+-		if ((token = lookup(buf)) == STRING)
+-			if ((yylval.v.string = strdup(buf)) == NULL)
+-				fatal("can't allocate memory for buffered string");
+-		return (token);
++
++		/*
++		* When having *non-null* value for token, we have a validated
++		* keyword argument (integer) in place. In other cases,
++		* we assume integer value of STRING, generated dynamically
++		* by Bison yyParser. This STRING integer value is used for
++		* further argument checks where ever STRING keyworded
++		* arguments are used.
++		* Furthermore, we limit count of arguments which are meant
++		* to be defined only once by a user. This is defined by
++		* values of token->k_seen and token->k_times individually
++		* for each supplied argument.
++		*/
++		if ((token = lookup(buf)) != NULL) {
++
++			if (!token->k_seen)
++				token->k_seen = 0;
++
++			if (strcmp("multiple", token->k_times) == 0) {
++				return (token->k_val);
++
++			} else if ((strcmp("single", token->k_times) == 0) &&
++			token->k_seen == 0) {
++				token->k_seen = 1;
++				return (token->k_val);
++
++			} else {
++				yyerror("option %s is already set", token->k_name);
++				return (c);
++			}
++
++		} else {
++			if ((yylval.v.string = strdup(buf)) == NULL) {
++				fatal("can't duplicate memory for buffered string");
++			} else {
++				return STRING;
++			}
++		}
++
+ 	}
++
+ 	if (c == '\n') {
+ 		yylval.lineno = file->lineno;
+ 		file->lineno++;
+@@ -902,12 +1231,205 @@ popfile(void)
+ 	return (file ? 0 : EOF);
+ }
+ 
++void
++checkvalues(const double a, char *aa, const double b, char *bb)
++{
++    if (a <= b)
++        fatalx("error in configuration values: %s can't be greater or equal than %s", bb, aa);
++}
++
++// NTP Configuration defaults
++void
++init_conf(struct ntpd_conf *conf)
++{
++	conf->ntpd_user			= NTPD_USER; // _ntp;                    
++
++	conf->driftfile			= DRIFTFILE; // /var/db/ntpd.drift;
++	conf->ctlsocket			= CTLSOCKET; // /var/run/ntpd.sock;
++
++	conf->interval_query_normal			= INTERVAL_QUERY_NORMAL; // 30;
++	conf->interval_query_pathetic			= INTERVAL_QUERY_PATHETIC; // 60;
++	conf->interval_query_aggressive			= INTERVAL_QUERY_AGGRESSIVE; // 5;
++	conf->interval_query_ultra_violence			= INTERVAL_QUERY_ULTRA_VIOLENCE; // 1;
++
++	conf->interval_query_timeout			= INTERVAL_QUERY_TIMEOUT; // 300;
++
++	conf->trustlevel_badpeer			= TRUSTLEVEL_BADPEER; // 6;
++	conf->trustlevel_pathetic			= TRUSTLEVEL_PATHETIC; // 2;
++	conf->trustlevel_aggressive			= TRUSTLEVEL_AGGRESSIVE; // 8;
++	conf->trustlevel_max			= TRUSTLEVEL_MAX; // 10;
++
++	/* maximum number of servers from DNS query */
++	conf->max_servers_dns			= MAX_SERVERS_DNS; // 8;
++
++	conf->qscale_off_min			= QSCALE_OFF_MIN; // 0.001;
++	conf->qscale_off_max			= QSCALE_OFF_MAX; // 0.050;
++
++	/* single query might take n secs max */
++	conf->querytime_max			= QUERYTIME_MAX; // 15;
++	/*Maximum number of allowed sensor offsets*/
++	conf->offset_array_size			= OFFSET_ARRAY_SIZE; // 8;
++	/*Number of sensor offset values allowed for median offset value calculation*/
++	conf->sensor_offsets			= SENSOR_OFFSETS; // 6;
++	/* max seconds to wait with -s */
++	conf->settime_timeout			= SETTIME_TIMEOUT; // 100;
++
++	/* negligible drift to not log (ms) */
++	conf->log_negligible_adjtime			= LOG_NEGLIGIBLE_ADJTIME; // 32;
++
++	/* negligible rate to not log (ppm) */
++	conf->log_negligible_adjfreq			= LOG_NEGLIGIBLE_ADJFREQ; // 0.05;
++
++	/* samples for est. of permanent drift */
++	conf->frequency_samples			= FREQUENCY_SAMPLES; // 8;
++
++	/* max correction per iteration */
++	conf->max_frequency_adjust			= MAX_FREQUENCY_ADJUST; // 128e-5;
++
++	/* max send errors before reconnect */
++	conf->max_send_errors			= MAX_SEND_ERRORS; // 3;
++
++	/* max chars in ctl_show report line */
++	conf->max_display_width			= MAX_DISPLAY_WIDTH; // 80;
++
++	/* set after doing adjfreq */
++	conf->filter_adjfreq			= FILTER_ADJFREQ; // 0x01;
++
++	/* # of ntp replies we want for auto */
++	conf->auto_replies			= AUTO_REPLIES; // 4;
++
++	/* dont bother auto setting < this */
++	conf->auto_threshold			= AUTO_THRESHOLD; // 60;
++
++	/* DNS tmpfail interval for auto */
++	conf->interval_auto_dnsfail			= INTERVAL_AUTO_DNSFAIL; // 1;
++
++	/* DNS tmpfail quick retries */
++	conf->tries_auto_dnsfail			= TRIES_AUTO_DNSFAIL; // 4;
++
++	conf->sensor_data_maxage			= SENSOR_DATA_MAXAGE; // 15*60;
++	conf->sensor_query_interval			= SENSOR_QUERY_INTERVAL; // 15;
++	conf->sensor_scan_interval			= SENSOR_SCAN_INTERVAL; // 1*60;
++
++	conf->sensor_default_refid			= SENSOR_DEFAULT_REFID; // "HARD";
++
++	conf->constraint_error_margin			= CONSTRAINT_ERROR_MARGIN; // 4;
++	conf->constraint_retry_interval			= CONSTRAINT_RETRY_INTERVAL; // 15;
++	conf->constraint_scan_interval			= CONSTRAINT_SCAN_INTERVAL; // 15*60;
++	conf->constraint_scan_timeout			= CONSTRAINT_SCAN_TIMEOUT; // 10;
++	conf->constraint_margin			= CONSTRAINT_MARGIN; // 2.0*60;
++
++	conf->constraint_maxheaderlength			= CONSTRAINT_MAXHEADERLENGTH; // 8192;
++}
++
++void
++print_conf(struct ntpd_conf *lconf)
++{
++	char*		boolean[5];
++	struct	constraint	*cstr;
++	struct	ntp_conf_sensor	*sens;
++	struct	ntp_peer	*peer;
++
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Current configuration:\n\n");
++	fprintf(stdout, "NTPd user: %s\n",       conf->ntpd_user);
++	fprintf(stdout, "Drift file: %s\n",      conf->driftfile);
++	fprintf(stdout, "CTL socket file: %s\n", conf->ctlsocket);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Query interval (normal): %d seconds\n",            conf->interval_query_normal);
++	fprintf(stdout, "Query interval (pathetic): %d seconds\n",          conf->interval_query_pathetic);
++	fprintf(stdout, "Query interval (aggressive): %d seconds\n",        conf->interval_query_aggressive);
++	fprintf(stdout, "Query interval (ultra violent): %d seconds\n",     conf->interval_query_ultra_violence);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Query interval after reply timeout: %d seconds\n", conf->interval_query_timeout);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Trust level (bad peer): %d\n",   conf->trustlevel_badpeer);
++	fprintf(stdout, "Trust level (pathetic): %d\n",   conf->trustlevel_pathetic);
++	fprintf(stdout, "Trust level (aggressive): %d\n", conf->trustlevel_aggressive);
++	fprintf(stdout, "Trust level (maximum): %d\n",    conf->trustlevel_max);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Maximum number of allowed sensor offsets: %d\n", conf->offset_array_size);
++	fprintf(stdout, "Number of sensor offset values considered for median offset value calculation: %d\n", conf->sensor_offsets);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Query time (maximum): %d seconds\n",              conf->querytime_max);
++	fprintf(stdout, "Start up timeout in auto mode: %d seconds\n",     conf->settime_timeout);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Maximum number of retrievable servers from a DNS query: %d\n", conf->max_servers_dns);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Time adjustment minimum scale: %.4f seconds\n", conf->qscale_off_min);
++	fprintf(stdout, "Time adjustment maximum scale: %.4f seconds\n", conf->qscale_off_max);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Neglible drift time to not log: %d milliseconds\n", conf->log_negligible_adjtime);
++	fprintf(stdout, "Neglible frequency rate to not log: %f ppm\n",      conf->log_negligible_adjfreq);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Frequency samples for estimation of permanent drift: %d\n", conf->frequency_samples);
++	fprintf(stdout, "Maximum frequency correction per iteration: %f\n",          conf->max_frequency_adjust);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Maximum send errors before reconnection: %d\n", conf->max_send_errors);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Maximum number of characters per output line: %d\n", conf->max_display_width);
++	fprintf(stdout, "\n");
++
++	if ((conf->filter_adjfreq) == 0x01)
++		*boolean = "true";
++	else if ((conf->filter_adjfreq) == 0x00)
++		*boolean = "false";
++
++	fprintf(stdout, "Filter frequency adjustment after maximum frequency correction: %s\n", *boolean);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "NTP replies for auto mode: %d seconds\n",   conf->auto_replies);
++	fprintf(stdout, "Threshold count for auto mode: %d\n",       conf->auto_threshold);
++	fprintf(stdout, "DNS failure interval for auto mode: %d\n",  conf->interval_auto_dnsfail);
++	fprintf(stdout, "DNS retries on failure in auto mode: %d\n", conf->tries_auto_dnsfail);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Sensor query interval: %d seconds\n",   conf->sensor_query_interval);
++	fprintf(stdout, "Sensor data maximum age: %d seconds\n", conf->sensor_data_maxage);
++	fprintf(stdout, "Sensor scan interval: %d seconds\n",    conf->sensor_scan_interval);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Sensor default reference ID string: %s\n", conf->sensor_default_refid);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Constraint error margin: %.2f seconds\n",   conf->constraint_error_margin);
++	fprintf(stdout, "Constraint default margin: %.2f seconds\n", conf->constraint_margin);
++	fprintf(stdout, "\n");
++	fprintf(stdout, "Constraint retry interval: %d seconds\n",   conf->constraint_retry_interval);
++	fprintf(stdout, "Constraint scan interval: %d seconds\n",            conf->constraint_scan_interval);
++	fprintf(stdout, "Constraint scan timeout: %d seconds\n",             conf->constraint_scan_timeout);
++	fprintf(stdout, "Constraint maximum HTTP header length: %d bytes\n", conf->constraint_maxheaderlength);
++	fprintf(stdout, "\n");
++
++	TAILQ_FOREACH(sens, &conf->ntp_conf_sensors, entry) {
++		fprintf(stdout, "Configuration: sensor %s, refid %s stratum %d weight %d\n",
++				sens->device,
++				sens->refstr,
++				sens->stratum,
++				sens->weight
++			);
++	}
++
++	TAILQ_FOREACH(peer, &conf->ntp_peers, entry) {
++		fprintf(stdout, "Configuration: NTP server %s on remote UDP port %d\n",
++				peer->addr_head.name,
++				peer->addr_head.port
++			);
++	}
++
++	TAILQ_FOREACH(cstr, &conf->constraints, entry) {
++		fprintf(stdout, "Configuration: HTTPS constraint server %s on remote TCP port %d\n",
++				cstr->addr_head.name,
++				cstr->addr_head.port
++			);
++	}
++	fprintf(stdout, "\n");
++}
++
+ int
+ parse_config(const char *filename, struct ntpd_conf *xconf)
+ {
+ 	int		 errors = 0;
+ 
+ 	conf = xconf;
++	init_conf(conf);
++
+ 	TAILQ_INIT(&conf->listen_addrs);
+ 	TAILQ_INIT(&conf->ntp_peers);
+ 	TAILQ_INIT(&conf->ntp_conf_sensors);
+@@ -922,5 +1444,18 @@ parse_config(const char *filename, struc
+ 	errors = file->errors;
+ 	popfile();
+ 
++	// Rough checks for conflicting values
++	checkvalues(conf->qscale_off_max, "qscale_off_max",
++				conf->qscale_off_min, "qscale_off_min");
++
++	checkvalues(conf->trustlevel_max, "trustlevel_max",
++				conf->trustlevel_aggressive, "trustlevel_aggressive");
++
++	checkvalues(conf->trustlevel_aggressive, "trustlevel_aggressive",
++				conf->trustlevel_badpeer, "trustlevel_badpeer");
++
++	checkvalues(conf->trustlevel_badpeer, "trustlevel_badpeer",
++				conf->trustlevel_pathetic, "trustlevel_pathetic");
++
+ 	return (errors ? -1 : 0);
+ }
+--- a/src/ntpd.conf.5	2020-08-01 01:22:25.000000000 +0300
++++ b/src/ntpd.conf.5	2020-08-02 02:31:01.526954911 +0300
+@@ -14,7 +14,7 @@
+ .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ .\"
+-.Dd $Mdocdate: August 01 2020 $
++.Dd $Mdocdate: August 02 2020 $
+ .Dt NTPD.CONF 5
+ .Os
+ .Sh NAME
+@@ -31,8 +31,10 @@ has the following format:
+ Empty lines and lines beginning with the
+ .Sq #
+ character are ignored.
+-.Pp
+-Keywords may be specified multiple times within the configuration file.
++.Ed
++.El
++.Sh BASIC KEYWORDS
++Basic keywords may be specified multiple times within the configuration file.
+ The basic configuration options are as follows:
+ .Bl -tag -width Ds
+ .It Xo Ic listen on Ar address
+@@ -282,12 +284,523 @@ constraints from "https://www.google.com
+ constraints from "https://duckduckgo.com/" port 443
+ .Ed
+ .El
++.Sh ADVANCED KEYWORDS
++Some
++.Xr ntpd 8
++default configuration values can be overridden, thus offering better
++adaption to system policy and flexibility for system administrators. Advanced
++keywords may be specified only once within the configuration file. The
++following values can be changed from the highlighted defaults:
++.Bl -tag -width Ds
++
++.It Ic auto_replies Ar number
++During OpenNTPD initialization, all NTP peers get automatic time offset value,
++if pre-conditions for automatic interval adjustment are being met. The
++conditions are as follows: OpenNTPD configuration has constraints,
++.Ic trusted
++NTP peers or
++.Ic trusted
++sensors and current internally defined
++process security level is 0. In this case, initial time offset value
++is set to 1 which, in return, triggers automatic offset calculation.
++.Pp
++In the automatic offset calculation, a
++.Ic trusted
++NTP peer offset values are being counted for each peer. For each peer an independent
++pool size is determined by
++.Ic auto_replies
++value, ignoring the last value. For instance, with
++.Ic auto_replies
++value 4, first 3 NTP peer offset values are considered for a single NTP peer,
++and a median offset value of these collected 3 offset values is calculated
++and used for time adjustment.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++4
++.El
++.Ed
++.It Ic auto_threshold Ar number
++In OpenNTPD initial automatic time offset calculation, three conditions
++are being considered for NTP peers: is a NTP peer
++.Ic trusted
++and current overall constraint-based median offset not 0, and whether an initial NTP
++peer time offset exceeds value of
++.Ic auto_threshold
++\&. If these conditions are met, then
++.Ic auto_threshold
++value may be considered. If NTP peer current time offset value is less than
++.Ic auto_threshold
++, then the system time offset value is considered to be already OK, and
++OpenNTPD stops calculating automatic offset value from further NTP
++peer queries. In this case, median offset value is not calculated.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++60
++.El
++.Ed
++.It Ic interval_auto_dnsfail Ar seconds
++In automatic NTP peer offset calculation mode (during OpenNTPD initialization),
++if NTP peer IP address is still unresolved (unknown), the next query is
++attempted in
++.Ic interval_auto_dnsfail
++seconds. Applies to unresolved constraint IP addresses, as well.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++1
++.El
++.Ed
++.It Ic tries_auto_dnsfail Ar number
++Maximum number of attempts to resolve a constraint IP address(es) with a
++DNS query before falling back from
++.Ic constraint_retry_interval
++to
++.Ic interval_auto_dnsfail
++\& in constraint initialization.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++4
++.El
++.Ed
++.It Ic constraint_error_margin Ar number
++Accepted number of errors during constraint process. If error count exceeds
++this value multiplied by calculated peer count, constraint connection will
++be reseted and a new constraint is retrieved.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++4
++.El
++.Ed
++.It Ic constraint_margin Ar seconds
++Acceptable time difference between retrieved HTTP header time value and
++calculated time value in seconds. HTTP header time values exceeding this
++margin value will be ignored.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++120
++.El
++.Ed
++.It Ic constraint_maxheaderlength Ar length
++Maximum allowed HTTP header length of constraint HTTPS server reply to
++be fetched in bytes. If the value is exceeded during processing,
++nothing is returned and constraint check fails.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++8192
++.El
++.Ed
++.It Ic constraint_scan_interval Ar seconds
++Constraint HTTPS servers scan interval in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++900
++.El
++.Ed
++.It Ic constraint_scan_timeout Ar seconds
++Maximum connection establishment time to a constraint HTTPS server in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++10
++.El
++.Ed
++.It Ic ctlsocket Ar path-to-file
++.Xr ntpd 8
++socket file path.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++/var/run/ntpd.sock
++.El
++.Ed
++.It Ic driftfile Ar path-to-file
++.Xr ntpd 8
++drift file path.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++/var/db/ntpd.drift
++.El
++.Ed
++.It Ic filter_adjfreq Ar true | false
++Whether to reset frequency filters after frequency adjustment.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++true
++.El
++.Ed
++.It Ic frequency_samples Ar number
++Number of frequency samples for estimating permanent drift value.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++8
++.El
++.Ed
++.It Ic trustlevel_pathetic Ar number
++Initial trust level for a new, timed out or erroneous remote NTP
++server. Every received and non-discarded reply increases trust
++for the server. The trust level is used for setting used
++.Ic interval_query_*
++value for the server and keeping track of valid remote NTP servers.
++.Pp
++A server having this trust level uses remote NTP query interval
++value
++.Ic interval_query_aggressive
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++2
++.El
++.Ed
++.It Ic trustlevel_badpeer Ar number
++If a replying remote NTP server has trust level one number
++less than this value, the server gets trusted. In this case,
++the server can achieve maximum trust level
++.Ic trustlevel_max
++\&. This trust level is preceded by trust level
++.Ic trustlevel_pathetic
++and followed by trust level
++.Ic trustlevel_aggressive
++\&.
++.Pp
++A NTP server having trust level value
++.Ic trustlevel_badpeer
++, or value greater than
++.Ic trustlevel_pathetic
++but less than
++.Ic trustlevel_aggressive
++uses remote NTP query interval value
++.Ic interval_query_aggressive
++\&.
++.Pp
++In a case of NTP server reply time out, if the server has at
++least trust level value
++.Ic trustlevel_badpeer
++and the trust level value divided by 2 is less than the
++.Ic trustlevel_badpeer
++value, the server will be invalidated and falls back to
++initial trust level
++.Ic trustlevel_pathetic
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++6
++.El
++.Ed
++.It Ic trustlevel_aggressive Ar number
++Aggressive trust level is preceded by trust level
++.Ic trustlevel_badpeer
++and followed by trust level
++.Ic trustlevel_max
++\&. If a remote NTP server current trust level is at least value
++.Ic trustlevel_pathetic
++but less than this value, used remote NTP query interval is
++determined by value
++.Ic interval_query_aggressive
++\&. A server with exact trust level
++.Ic trustlevel_aggressive
++uses query interval
++.Ic interval_query_normal
++(see
++.Ic trustlevel_max
++below).
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++8
++.El
++.Ed
++.It Ic trustlevel_max Ar number
++Maximum trust level follows trust level
++.Ic trustlevel_aggressive
++\&. This is the maximum trust level which a remote
++NTP server can achieve. A server having at least trust level of
++.Ic trustlevel_aggressive
++uses remote NTP query interval value
++.Ic interval_query_normal
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++10
++.El
++.Ed
++.It Ic interval_query_pathetic Ar seconds
++Remote NTP server query interval in seconds for servers with
++a trust level value less than
++.Ic trustlevel_pathetic
++\&. Practically never used.
++This value is not the final query interval value but used
++in a combination with a dynamic offset scale value, determined by
++.Ic qscale_off_min
++and
++.Ic qscale_off_max
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++60
++.El
++.Ed
++.It Ic interval_query_ultra_violence Ar seconds
++Remote NTP server query interval in seconds for servers
++with a trust level value greater than
++.Ic trustlevel_pathetic
++but less than
++.Ic trustlevel_aggressive
++in a case where a NTP peer does not still have large enough
++pool of already queried offset time values for its offset
++time median calculation (checked against value
++.Ic auto replies
++) or is not
++.Ic trusted
++, interval value
++.Ic interval_query_ultra_violence
++may be triggered. Applies only to NTP offset calculation
++automatic mode.
++.Pp
++In most cases,
++.Ic interval_query_aggressive
++is used instead. Dynamic offset scale value factors
++.Ic qscale_off_min
++and
++.Ic qscale_off_max
++are ignored.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++1
++.El
++.Ed
++.It Ic interval_query_aggressive Ar seconds
++Remote NTP server query interval in seconds for servers
++with a trust level value greater than
++.Ic trustlevel_pathetic
++but less than
++.Ic trustlevel_aggressive
++\&. Applies only, if automatic NTP peer query state is finished.
++This value is not the final query interval value but used
++in a combination with a dynamic offset scale value, determined by
++.Ic qscale_off_min
++and
++.Ic qscale_off_max
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++5
++.El
++.Ed
++.It Ic interval_query_normal Ar seconds
++Remote NTP server query interval in seconds for servers with
++a trust level value between
++.Ic trustlevel_aggressive
++and
++.Ic trustlevel_max
++\&. This value is not the final query interval value but used
++in a combination with a dynamic offset scale value, determined by
++.Ic qscale_off_min
++and
++.Ic qscale_off_max
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++30
++.El
++.Ed
++.It Ic interval_query_timeout Ar seconds
++Retry time in seconds after failed connection attempt to a remote NTP server.
++.Bd -li

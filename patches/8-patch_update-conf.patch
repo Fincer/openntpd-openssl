@@ -1,0 +1,344 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Update default configuration file
+
+
+--- a/ntpd.conf	2020-07-31 23:00:50.000000000 +0300
++++ b/ntpd.conf	2020-08-02 02:30:41.706954890 +0300
+@@ -1,11 +1,330 @@
+-# $OpenBSD: ntpd.conf,v 1.16 2019/11/06 19:04:12 deraadt Exp $
+-#
+ # See ntpd.conf(5) and /etc/examples/ntpd.conf
+ 
++# BASIC KEYWORDS
++
++# listen on 127.0.0.1 port 123
++
+ servers pool.ntp.org
+-server time.cloudflare.com
+-sensor *
++server  time.cloudflare.com
++sensor  *
+ 
+-constraint from "9.9.9.9"              # quad9 v4 without DNS
+-constraint from "2620:fe::fe"          # quad9 v6 without DNS
++constraint  from "9.9.9.9"             # quad9 v4 without DNS
++constraint  from "2620:fe::fe"         # quad9 v6 without DNS
+ constraints from "www.google.com"      # intentionally not 8.8.8.8
++
++constraints from "https://www.duckduckgo.com" port 443
++
++# ADVANCED KEYWORDS
++
++# During OpenNTPD initialization, all NTP peers get
++# automatic time offset value, if pre-conditions for
++# automatic interval adjustment are being met.
++# The conditions are as follows: OpenNTPD configuration
++# has constraints, trusted NTP peers or trusted sensors
++# and current internally defined process security level
++# is 0. In this case, initial time offset value is set
++# to 1 which, in return, triggers automatic offset calculation.
++#
++# In the automatic offset calculation, a trusted NTP
++# peer offset values are being counted for each peer.
++# For each peer an independent pool size is determined
++# by auto_replies value, ignoring the last value.
++# For instance, with auto_replies value 4, first
++# 3 NTP peer offset values are considered for a single
++# NTP peer, and a median offset value of these collected
++# 3 offset values is calculated and used for time adjustment.
++#
++# auto_replies                4
++
++# In OpenNTPD initial automatic time offset calculation,
++# three conditions are being considered for NTP peers:
++# is a NTP peer trusted and current overall constraint-based
++# median offset not 0, and whether an initial NTP peer
++# time offset exceeds value of auto_threshold . If these
++# conditions are met, then auto_threshold value may be
++# considered. If NTP peer current time offset value is
++# less than auto_threshold , then the system time offset
++# value is considered to be already OK, and OpenNTPD stops
++# calculating automatic offset value from further NTP peer
++# queries. In this case, median offset value is not calculated.
++#
++# auto_threshold              60
++
++# In automatic NTP peer offset calculation mode (during OpenNTPD
++# initialization), if NTP peer IP address is still unresolved
++# (unknown), the next query is attempted in interval_auto_dnsfail
++# seconds. Applies to unresolved constraint IP addresses, as well.
++#
++# interval_auto_dnsfail       1
++
++# Maximum number of attempts to resolve a constraint IP address(es)
++# with a DNS query before falling back from constraint_retry_interval
++# to interval_auto_dnsfail  in constraint initialization.
++#
++# tries_auto_dnsfail          4
++
++# PEM-formatted certificate bundle file
++# for constraint HTTPS connections.
++#
++# constraint_ca               /etc/ssl/cert.pem
++
++# Whether to validate constraint HTTPS
++# server certificate.
++#
++# constraint_ca_validation    true
++
++# Use either LibreSSL (libressl) or OpenSSL (openssl)
++# for constraint HTTPS server connections. To
++# support chosen TLS engine, ntpd(8) must be
++# compiled and run with proper libraries installed
++# on the system. Only LibreSSL and OpenSSL are
++# supported.
++#
++# constraint_engine           libressl
++
++# Accepted number of errors during constraint
++# process. If error count exceeds this value
++# multiplied by calculated peer count,
++# constraint connection will be reseted and
++# a new constraint is retrieved.
++#
++# constraint_error_margin     4
++
++# Acceptable time difference between retrieved
++# HTTP header time value and calculated time
++# value in seconds. HTTP header time values
++# exceeding this margin value will be ignored.
++#
++# constraint_margin           120
++
++# Maximum allowed HTTP header length of constraint
++# HTTPS server reply to be fetched in bytes. If
++# the value is exceeded during processing, nothing
++# is returned and constraint check fails.
++#
++# constraint_max_headerlength 8192
++
++# Constraint HTTPS servers scan interval in seconds.
++#
++# constraint_scan_interval    900
++
++# Maximum connection establishment time to a
++# constraint HTTPS server in seconds.
++#
++# constraint_scan_timeout     10
++
++# ntpd(8) socket file path.
++#
++# ctlsocket                   /var/run/ntpd.sock
++
++# ntpd(8) drift file path.
++#
++# driftfile                   /var/db/ntpd.drift
++
++# Whether to reset frequency filters after
++# frequency adjustment.
++#
++# filter_adjfreq              true
++
++# Number of frequency samples for estimating
++# permanent drift value.
++#
++# frequency_samples           8
++
++# Initial trust level for a new, timed out or
++# erroneous remote NTP server. Every received
++# and non-discarded reply increases trust for
++# the server. The trust level is used for
++# setting used interval_query_* value for the
++# server and keeping track of valid remote NTP
++# servers.
++#
++# A server having this trust level uses remote
++# NTP query interval value interval_query_aggressive .
++#
++# trustlevel_pathetic         2
++
++# If a replying remote NTP server has trust level
++# one number less than this value, the server gets
++# trusted. In this case, the server can achieve
++# maximum trust level trustlevel_max . This trust
++# level is preceded by trust level trustlevel_pathetic
++# and followed by trust level trustlevel_aggressive .
++#
++# A NTP server having trust level value trustlevel_badpeer ,
++# or value greater than trustlevel_pathetic but less than
++# trustlevel_aggressive uses remote NTP query interval
++# value interval_query_aggressive .
++#
++# In a case of NTP server reply time out, if the server
++# has at least trust level value trustlevel_badpeer
++# and the trust level value divided by 2 is less than
++# the trustlevel_badpeer value, the server will be
++# invalidated and falls back to initial trust level
++# trustlevel_pathetic .
++#
++# trustlevel_badpeer          6
++
++# Aggressive trust level is preceded by trust level
++# trustlevel_badpeer and followed by trust level
++# trustlevel_max . If a remote NTP server current trust
++# level is at least value of trustlevel_pathetic but
++# less than this value, used remote NTP query interval
++# is determined by value interval_query_aggressive .
++# A server with exact trust level trustlevel_aggressive
++# uses query interval interval_query_normal
++# (see trustlevel_max below).
++#
++# trustlevel_aggressive       8
++
++# Maximum trust level follows trust level trustlevel_aggressive .
++# This is the maximum trust level which a remote NTP
++# server can achieve. A server having at least trust
++# level trustlevel_aggressive uses remote NTP query
++# interval value interval_query_normal .
++#
++# trustlevel_max              10
++
++# Remote NTP server query interval in seconds for servers with
++# a trust level value greater than trustlevel_pathetic but less
++# than trustlevel_aggressive in a case where a NTP peer does not
++# still have large enough pool of already queried offset time values
++# for its offset time median calculation (checked against value
++# auto replies ) or is not trusted , interval value
++# interval_query_ultra_violence may be triggered.
++# Applies only to NTP offset calculation automatic mode.
++#
++# In most cases, interval_query_aggressive is used instead.
++# Dynamic offset scale value factors qscale_off_min and qscale_off_max
++# are ignored.
++#
++# interval_query_ultra_violence 1
++
++# Remote NTP server query interval in seconds for
++# servers with a trust level value less than trustlevel_pathetic .
++# Practically never used.
++#
++# This value is not the final query interval value but
++# used in a combination with a dynamic offset scale value,
++# determined by qscale_off_min and qscale_off_max .
++#
++# trustlevel_query_pathetic   60
++
++# Remote NTP server query interval in seconds for servers
++# with a trust level value greater than trustlevel_pathetic
++# but less than trustlevel_aggressive . Since all servers
++# start with a value trustlevel_pathetic , it means that
++# this is the initial value used for all new, timed out
++# or erroneous NTP servers.
++#
++# This value is not the final query interval value but
++# used in a combination with a dynamic offset scale value,
++# determined by qscale_off_min and qscale_off_max .
++#
++# trustlevel_query_aggressive 5
++
++# Remote NTP server query interval in seconds for servers
++# with a trust level value between trustlevel_aggressive
++# and trustlevel_max .
++#
++# This value is not the final query interval value but
++# used in a combination with a dynamic offset scale value,
++# determined by qscale_off_min and qscale_off_max .
++#
++# trustlevel_query_normal     30
++
++# Retry time in seconds after failed connection attempt
++# to a remote NTP server.
++#
++# interval_query_timeout      300
++
++# Negligible frequency rate to not log in PPM.
++#
++# log_negligible_adjfreq      0.05
++
++# Negligible drift time to not log in milliseconds.
++#
++# log_negligible_adjtime      32
++
++# Maximum number of characters in a ntpctl(8)
++# report line (peers, status, sensors and all).
++#
++# max_display_width           80
++
++# Maximum allowed frequency correction per iteration.
++#
++# max_frequency_adjust        0.0128
++
++# Maximum number of errors tolerated before reconnecting
++# to a remote NTP server.
++#
++# max_send_errors             3
++
++# Maximum number of remote NTP server IP addresses
++# fetched per DNS query.
++#
++# max_servers_dns             8
++
++# ntpd(8) process user name. Group name and working
++# directory are internally fetched by getpwnam(3) .
++#
++# ntpd_user                   ntp
++
++# Minimum scale value used for dynamically adjusting
++# NTP server query interval time. If median NTP server
++# & sensor offset value is lower than this value, then
++# this value is used for scale calculation as minimum value.
++# Otherwise, the offset value is used as minimum value.
++# The offset value is a combined median value, based on
++# all NTP server & sensor offset values.
++#
++# The determined frequency scale is
++# qscale_off_max / { qscale_off_min OR median offset } .
++#
++# In the end, the calculated scale value is multiplied
++# one of interval_query_* values (pathetic, aggressive, normal)
++# on a client side, and ultimately used for dynamic
++# adjustment of client-side NTP server query interval time
++# for ntpd(8) process.
++#
++# qscale_off_min              0.001
++
++# Maximum scale value used for dynamically adjusting
++# NTP server query interval time. This value is used
++# either with a median NTP server & sensor offset value,
++# described in qscale_off_min section, or directly with
++# the value of qscale_off_min . The more detailed description
++# about further use of this value is above and
++# in interval_query_* sections.
++#
++# qscale_off_max              0.050
++
++# Maximum time reserved for a single NTP server query
++# in seconds.
++#
++# querytime_max               15
++
++# Sensor data maximum valid age in seconds.
++#
++# sensor_data_maxage          900
++
++# Sensor default reference ID string.
++#
++# sensor_default_refid        "HARD"
++
++# Maximum allowed sensor time offset in seconds.
++#
++# sensor_offsets              6
++
++# Sensor query interval in seconds.
++#
++# sensor_query_interval       15
++
++# Scan interval for new sensors in seconds.
++#
++# sensor_scan_interval        60
++
++# Maximum time to wait for a constraint to reply
++# during OpenNTPD initial automatic mode.
++#
++# settime_timeout             100

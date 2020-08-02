@@ -1,0 +1,22 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Sun, 02 Aug 2020 14:12:40 +0300
+Subject: Fix debug mode not showing output in command line
+
+
+--- a/src/ntpd.c	2020-08-01 13:33:42.000000000 +0300
++++ b/src/ntpd.c	2020-08-01 16:07:32.660248971 +0300
+@@ -195,12 +195,14 @@ main(int argc, char *argv[])
+ 		switch (ch) {
+ 		case 'd':
+ 			lconf.debug = 1;
++			lconf.verbose = 2;
+ 			break;
+ 		case 'f':
+ 			conffile = optarg;
+ 			break;
+ 		case 'n':
+ 			lconf.debug = 1;
++			lconf.verbose = 2;
+ 			lconf.noaction = 1;
+ 			break;
+ 		case 'P':
