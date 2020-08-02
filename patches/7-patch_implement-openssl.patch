@@ -1,5 +1,5 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 14:12:40 +0300
+Date: Sun, 02 Aug 2020 20:55:36 +0300
 Subject: Implement OpenSSL support, update manual, update ChangeLog
 
 
@@ -703,4 +703,982 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
 +		goto fail;
 +
 +	if ((httpsdate->tls_method = TLS_method()) == NULL)
-+		goto fai
++		goto fail;
++	
++	if ((httpsdate->tls_ctx = SSL_CTX_new(httpsdate->tls_method)) == NULL)
++		goto fail;
++
++    if ((SSL_CTX_set_cipher_list(httpsdate->tls_ctx,
++		SSL_DEFAULT_CIPHER_LIST)) <= 0)
++		goto fail;
++
++	if (*ca == 1 || conf->constraint_ca_validation == 0) {
++		SSL_CTX_set_verify(httpsdate->tls_ctx, SSL_VERIFY_NONE, NULL);
++	} else {
++		/* 
++		 * OpenSSL built-in procedure terminates connection in
++		 * a case of verification failure if SSL_VERIFY_PEER
++		 * is used on the client side with NULL value for 
++		 * verify_callback function.
++		 * See man SSL_CTX_set_verify for details.
++		 */
++		SSL_CTX_set_verify(httpsdate->tls_ctx, SSL_VERIFY_PEER, NULL);
++	}
++
++	return (httpsdate);
++
++ fail:
++	o_httpsdate_free(httpsdate);
++	return (NULL);
++}
++
++void
++o_httpsdate_free(void *arg)
++{
++	struct o_httpsdate *httpsdate = arg;
++	if (httpsdate == NULL)
++		return;
++	if (httpsdate->tls_conn) {
++		SSL_shutdown(httpsdate->tls_conn);
++		SSL_free(httpsdate->tls_conn);
++	}
++	SSL_CTX_free(httpsdate->tls_ctx);
++	free(httpsdate->tls_request);
++	free(httpsdate);
++}
++
++int
++o_httpsdate_request(struct o_httpsdate *httpsdate, struct timeval *when)
++{
++	size_t	 outlen = 0, maxlength = conf->constraint_max_headerlength, len;
++	struct sockaddr_in	sa_in;
++	struct sockaddr_in6	*sa_in6;
++	struct ntp_addr		*h;
++	char	*line, *p, *buf;
++	int	 ret, sslfd = 0;
++	char ia_str[70]; // 33: 32-bit IPv4 + EOL :: 65: 64-bit IPv6 + EOL
++
++	if ((httpsdate->tls_conn = SSL_new(httpsdate->tls_ctx)) == NULL)
++		goto fail;
++
++	h = httpsdate->cstr->addr;
++
++	switch (h->ss.ss_family) {
++
++		case AF_INET:
++			memset(&sa_in, 0, sizeof(sa_in));
++			memcpy(&sa_in, (struct sockaddr_in *)&h->ss, sizeof(sa_in));
++
++			inet_ntop(AF_INET, &sa_in.sin_addr, ia_str, sizeof(ia_str));
++
++			if ((sslfd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP)) == -1)
++				log_warnx("constraint %s: can't create OpenSSL socket (4)", ia_str);
++
++			SSL_set_fd(httpsdate->tls_conn, sslfd);
++
++			log_debug("constraint %s: initializing HTTPS request", ia_str);
++			ret = connect(sslfd, (struct sockaddr *)&sa_in, sizeof(sa_in));
++			if (ret < 0) {
++				log_warnx("constraint %s: TLS connection failed, socket error: %d",
++						 ia_str,
++						 errno
++						);
++				goto fail;
++			}
++
++			break;
++
++		case AF_INET6:
++			memset(&sa_in6, 0, sizeof(sa_in6));
++			memcpy(&sa_in6, (struct sockaddr6_in *)&h->ss, sizeof(sa_in6));
++
++			inet_ntop(AF_INET6, &sa_in6->sin6_addr, ia_str, sizeof(ia_str));
++
++			if ((sslfd = socket(AF_INET6, SOCK_STREAM, 0)) == -1)
++				log_warnx("constraint %s: can't create OpenSSL socket (6)",
++					ia_str
++				);
++
++			SSL_set_fd(httpsdate->tls_conn, sslfd);
++
++			log_debug("constraint %s: initializing HTTPS request", ia_str);
++			ret = connect(sslfd, (struct sockaddr *)&sa_in6, sizeof(sa_in6));
++			if (ret < 0) {
++				log_warnx("constraint %s: TLS connection failed, socket error: %d",
++						 ia_str,
++						 errno
++						);
++				goto fail;
++			}
++
++			break;
++
++		default:
++			fatalx("constraint %s: invalid network address family in HTTPS request",
++				ia_str
++			);
++			goto fail;
++	}
++
++	log_debug("constraint %s: establishing connection", ia_str);
++	ret = SSL_connect(httpsdate->tls_conn);
++	if (ret < 1) {
++		log_warnx("constraint %s: TLS connection failed in accept (%s)",
++			ia_str,
++			httpsdate->cstr->addr_head.name
++		);
++		openssl_lasterr();
++		goto fail;
++	}
++	if (ret == 5) {
++		log_warnx("constraint %s: socket error no: %d", ia_str, ret);
++		goto fail;
++	}
++
++	buf = httpsdate->tls_request;
++	len = strlen(httpsdate->tls_request);
++
++	while (len > 0) {
++		ret = SSL_write(httpsdate->tls_conn, buf, len);
++		if (ret == SSL_ERROR_WANT_WRITE || ret == SSL_ERROR_WANT_READ)
++			continue;
++	if (ret < 1) {
++		log_warnx("constraint %s: TLS write operation failed: (%s)",
++			ia_str,
++			httpsdate->cstr->addr_head.name
++		);
++		openssl_lasterr();
++		goto fail;
++	}
++	if (ret == 6) {
++		log_warnx("constraint %s: HTTPS server aborted the request", ia_str);
++		openssl_lasterr();
++		SSL_shutdown(httpsdate->tls_conn);
++	}
++		buf += ret;
++		len -= ret;
++	}
++
++	while ((line = o_tls_readline(httpsdate->tls_conn, &outlen,
++	    &maxlength, when)) != NULL) {
++
++		line[strcspn(line, "\r\n")] = '\0';
++
++		if ((p = strchr(line, ' ')) == NULL || *p == '\0')
++			goto next;
++		*p++ = '\0';
++		if (strcasecmp("Date:", line) != 0)
++			goto next;
++
++		/*
++		 * Expect the date/time format as IMF-fixdate which is
++		 * mandated by HTTP/1.1 in the new RFC 7231 and was
++		 * preferred by RFC 2616.  Other formats would be RFC 850
++		 * or ANSI C's asctime() - the latter doesn't include
++		 * the timezone which is required here.
++		 */
++		if (strptime(p, "%a, %d %h %Y %T GMT",
++		    &httpsdate->tls_tm) == NULL) {
++			log_warnx("constraint %s: unsupported date format",
++				ia_str
++			);
++			free(line);
++			return (-1);
++		}
++
++		free(line);
++		break;
++ next:
++		free(line);
++	}
++
++	return (0);
++
++ fail:
++	close(sslfd);
++	o_httpsdate_free(httpsdate);
++	return (-1);
++}
++
++void *
++o_httpsdate_query(struct constraint *cstr, const int *ca,
++				  struct timeval *rectv, struct timeval *xmttv)
++{
++	struct o_httpsdate	*httpsdate;
++	struct timeval		 when;
++	time_t			 t;
++
++	if ((httpsdate = o_httpsdate_init(cstr, ca)) == NULL)
++		return (NULL);
++
++	if (o_httpsdate_request(httpsdate, &when) == -1)
++		return (NULL);
++
++	/* Return parsed date as local time */
++	t = timegm(&httpsdate->tls_tm);
++
++	/* Report parsed Date: as "received time" */
++	rectv->tv_sec = t;
++	rectv->tv_usec = 0;
++
++	/* And add delay as "transmit time" */
++	xmttv->tv_sec = when.tv_sec;
++	xmttv->tv_usec = when.tv_usec;
++
++	return (httpsdate);
++}
++
++/* Based on SSL_readline in ftp/fetch.c */
++char *
++o_tls_readline(SSL *tls, size_t *lenp, size_t *maxlength,
++    struct timeval *when)
++{
++
++	size_t i, len;
++	char *buf, *q, c;
++	ssize_t ret;
++
++	len = 128;
++	if ((buf = malloc(len)) == NULL)
++		fatal("constraint: can't allocate memory for TLS transfer buffer");
++
++	for (i = 0; ; i++) {
++		if (i >= len - 1) {
++			if ((q = reallocarray(buf, len, 2)) == NULL)
++				fatal("constraint: can't expand TLS transfer buffer");
++			buf = q;
++			len *= 2;
++		}
++ again:
++		ret = SSL_read(tls, &c, 1);
++		if (ret == SSL_ERROR_WANT_WRITE || ret == SSL_ERROR_WANT_READ)
++			goto again;
++		if (ret < 1 || ret == 6) {
++			/* SSL read error, ignore */
++			free(buf);
++			return (NULL);
++		}
++
++		if (maxlength != NULL && (*maxlength)-- == 0) {
++			log_warnx("constraint: maximum HTTP header length exceeded");
++			free(buf);
++			return (NULL);
++		}
++
++		buf[i] = c;
++		if (c == '\n')
++			break;
++	}
++	*lenp = i;
++	if (gettimeofday(when, NULL) == -1)
++		fatal("constraint: can't get a valid time stamp");
++	return (buf);
++}
++
++void
++openssl_lasterr(void)
++{
++	unsigned long err = ERR_peek_last_error();
++	char buf[2048];
++	char *msg;
++
++	msg = ERR_error_string(err, buf);
++	ERR_clear_error();
++	log_warnx("%s", msg);
++}
+--- /dev/null	2020-07-26 15:23:52.401078754 +0300
++++ b/src/constraint-libressl.c	2020-08-01 19:50:24.130263065 +0300
+@@ -0,0 +1,296 @@
++/*	$OpenBSD: constraint.c,v 1.35 2016/12/05 10:41:33 rzalamena Exp $	*/
++
++/*
++ * Copyright (c) 2015 Reyk Floeter <reyk@openbsd.org>
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <time.h>
++
++#include "ntpd.h"
++
++struct httpsdate *
++httpsdate_init(const char *addr, const int *port, const char *hostname,
++    const char *path, const u_int8_t *ca, size_t ca_len)
++{
++	struct httpsdate	*httpsdate = NULL;
++	char	port_s[sizeof(port)];
++
++	if ((httpsdate = calloc(1, sizeof(*httpsdate))) == NULL)
++		goto fail;
++
++	if (hostname == NULL)
++		hostname = addr;
++
++	sprintf(port_s, "%d", *port);
++
++	if ((httpsdate->tls_addr = strdup(addr)) == NULL ||
++	    (httpsdate->tls_port = strdup(port_s)) == NULL ||
++	    (httpsdate->tls_hostname = strdup(hostname)) == NULL ||
++	    (httpsdate->tls_path = strdup(path)) == NULL)
++		goto fail;
++
++	if (asprintf(&httpsdate->tls_request,
++	    "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
++	    httpsdate->tls_path, httpsdate->tls_hostname) == -1)
++		goto fail;
++
++	if ((httpsdate->tls_config = tls_config_new()) == NULL)
++		goto fail;
++
++	if (ca == NULL || ca_len == 0 || conf->constraint_ca_validation == 0) {
++		log_debug("constraint %s: certificate can't be verified", addr);
++		tls_config_insecure_noverifycert(httpsdate->tls_config);
++	} else {
++		log_debug("constraint %s: verifying certificate", addr);
++		if (tls_config_set_ca_mem(httpsdate->tls_config, ca, ca_len) == -1)
++			goto fail;
++	}
++
++	/*
++	 * Due to the fact that we're trying to determine a constraint for time
++	 * we do our own certificate validity checking, since the automatic
++	 * version is based on our wallclock, which may well be inaccurate...
++	 */
++	tls_config_insecure_noverifytime(httpsdate->tls_config);
++
++	return (httpsdate);
++
++ fail:
++	httpsdate_free(httpsdate);
++	return (NULL);
++}
++
++void
++httpsdate_free(void *arg)
++{
++	struct httpsdate *httpsdate = arg;
++	if (httpsdate == NULL)
++		return;
++	if (httpsdate->tls_ctx)
++		tls_close(httpsdate->tls_ctx);
++	tls_free(httpsdate->tls_ctx);
++	tls_config_free(httpsdate->tls_config);
++	free(httpsdate->tls_addr);
++	free(httpsdate->tls_port);
++	free(httpsdate->tls_hostname);
++	free(httpsdate->tls_path);
++	free(httpsdate->tls_request);
++	free(httpsdate);
++}
++
++int
++httpsdate_request(struct httpsdate *httpsdate, struct timeval *when)
++{
++	char	 timebuf1[32], timebuf2[32];
++	size_t	 outlen = 0, maxlength = conf->constraint_max_headerlength, len;
++	char	*line, *p, *buf;
++	time_t	 httptime, notbefore, notafter;
++	struct tm *tm;
++	ssize_t	 ret;
++
++	if ((httpsdate->tls_ctx = tls_client()) == NULL)
++		goto fail;
++
++	if (tls_configure(httpsdate->tls_ctx, httpsdate->tls_config) == -1)
++		goto fail;
++
++	/*
++	 * LibreSSL expects an address string, which can also be a DNS name,
++	 * but we pass a pre-resolved IP address string in tls_addr so it
++	 * does not trigger any DNS operation and is safe to be called
++	 * without the dns pledge.
++	 */
++	log_debug("constraint %s: establishing connection", httpsdate->tls_addr);
++	if (tls_connect_servername(httpsdate->tls_ctx, httpsdate->tls_addr,
++	    httpsdate->tls_port, httpsdate->tls_hostname) == -1) {
++		log_debug("constraint %s: TLS connection failed (%s): %s",
++		    httpsdate->tls_addr,
++			httpsdate->tls_hostname,
++		    tls_error(httpsdate->tls_ctx)
++		);
++		goto fail;
++	}
++
++	buf = httpsdate->tls_request;
++	len = strlen(httpsdate->tls_request);
++	while (len > 0) {
++		ret = tls_write(httpsdate->tls_ctx, buf, len);
++		if (ret == TLS_WANT_POLLIN || ret == TLS_WANT_POLLOUT)
++			continue;
++		if (ret == -1) {
++			log_warnx("constraint %s: TLS write operation failed (%s): %s",
++				httpsdate->tls_addr,
++				httpsdate->tls_hostname,
++				tls_error(httpsdate->tls_ctx)
++			);
++			goto fail;
++		}
++		buf += ret;
++		len -= ret;
++	}
++
++	while ((line = tls_readline(httpsdate->tls_ctx, &outlen,
++	    &maxlength, when)) != NULL) {
++		line[strcspn(line, "\r\n")] = '\0';
++
++		if ((p = strchr(line, ' ')) == NULL || *p == '\0')
++			goto next;
++		*p++ = '\0';
++		if (strcasecmp("Date:", line) != 0)
++			goto next;
++
++		/*
++		 * Expect the date/time format as IMF-fixdate which is
++		 * mandated by HTTP/1.1 in the new RFC 7231 and was
++		 * preferred by RFC 2616.  Other formats would be RFC 850
++		 * or ANSI C's asctime() - the latter doesn't include
++		 * the timezone which is required here.
++		 */
++		if (strptime(p, IMF_FIXDATE,
++		    &httpsdate->tls_tm) == NULL) {
++			log_warnx("constraint %s: unsupported date format",
++				httpsdate->tls_addr
++			);
++			free(line);
++			return (-1);
++		}
++
++		free(line);
++		break;
++ next:
++		free(line);
++	}
++
++	/*
++	 * Now manually check the validity of the certificate presented in the
++	 * TLS handshake, based on the time specified by the server's HTTP Date:
++	 * header.
++	 */
++	notbefore = tls_peer_cert_notbefore(httpsdate->tls_ctx);
++	notafter = tls_peer_cert_notafter(httpsdate->tls_ctx);
++	if ((httptime = timegm(&httpsdate->tls_tm)) == -1)
++		goto fail;
++	if (httptime <= notbefore) {
++		if ((tm = gmtime(&notbefore)) == NULL)
++			goto fail;
++		if (strftime(timebuf1, sizeof(timebuf1), X509_DATE, tm) == 0)
++			goto fail;
++		if (strftime(timebuf2, sizeof(timebuf2), X509_DATE,
++		    &httpsdate->tls_tm) == 0)
++			goto fail;
++		log_warnx("constraint %s: TLS certificate not yet valid (%s): "
++		    "not before %s, now is %s", httpsdate->tls_addr,
++		    httpsdate->tls_hostname, timebuf1, timebuf2);
++		goto fail;
++	}
++	if (httptime >= notafter) {
++		if ((tm = gmtime(&notafter)) == NULL)
++			goto fail;
++		if (strftime(timebuf1, sizeof(timebuf1), X509_DATE, tm) == 0)
++			goto fail;
++		if (strftime(timebuf2, sizeof(timebuf2), X509_DATE,
++		    &httpsdate->tls_tm) == 0)
++			goto fail;
++		log_warnx("constraint %s: TLS certificate has been expired (%s): "
++		    "not after %s, now is %s", httpsdate->tls_addr,
++		    httpsdate->tls_hostname, timebuf1, timebuf2);
++		goto fail;
++	}
++
++	return (0);
++
++ fail:
++	httpsdate_free(httpsdate);
++	return (-1);
++}
++
++void *
++httpsdate_query(const char *addr, const int *port, const char *hostname,
++    const char *path, const u_int8_t *ca, size_t ca_len,
++    struct timeval *rectv, struct timeval *xmttv)
++{
++	struct httpsdate	*httpsdate;
++	struct timeval		 when;
++	time_t			 t;
++
++	if ((httpsdate = httpsdate_init(addr, port, hostname, path,
++	    ca, ca_len)) == NULL)
++		return (NULL);
++
++	if (httpsdate_request(httpsdate, &when) == -1)
++		return (NULL);
++
++	/* Return parsed date as local time */
++	t = timegm(&httpsdate->tls_tm);
++
++	/* Report parsed Date: as "received time" */
++	rectv->tv_sec = t;
++	rectv->tv_usec = 0;
++
++	/* And add delay as "transmit time" */
++	xmttv->tv_sec = when.tv_sec;
++	xmttv->tv_usec = when.tv_usec;
++
++	return (httpsdate);
++}
++
++/* Based on SSL_readline in ftp/fetch.c */
++char *
++tls_readline(struct tls *tls, size_t *lenp, size_t *maxlength,
++    struct timeval *when)
++{
++	size_t i, len;
++	char *buf, *q, c;
++	ssize_t ret;
++
++	len = 128;
++	if ((buf = malloc(len)) == NULL)
++		fatal("constraint: can't allocate memory for TLS transfer buffer");
++	for (i = 0; ; i++) {
++		if (i >= len - 1) {
++			if ((q = reallocarray(buf, len, 2)) == NULL)
++				fatal("constraint: can't expand TLS transfer buffer");
++			buf = q;
++			len *= 2;
++		}
++ again:
++		ret = tls_read(tls, &c, 1);
++		if (ret == TLS_WANT_POLLIN || ret == TLS_WANT_POLLOUT)
++			goto again;
++		if (ret == -1) {
++			/* SSL read error, ignore */
++			free(buf);
++			return (NULL);
++		}
++
++		if (maxlength != NULL && (*maxlength)-- == 0) {
++			log_warnx("constraint: maximum HTTP header length exceeded");
++			free(buf);
++			return (NULL);
++		}
++
++		buf[i] = c;
++		if (c == '\n')
++			break;
++	}
++	*lenp = i;
++	if (gettimeofday(when, NULL) == -1)
++		fatal("constraint: can't get a valid time stamp");
++	return (buf);
++}
+--- a/src/config.c	2020-08-01 11:35:05.758097319 +0300
++++ b/src/config.c	2020-08-01 19:37:13.476928898 +0300
+@@ -190,9 +190,6 @@ new_constraint(void)
+ 	p->id = ++constraint_maxid;
+ 	p->fd = -1;
+ 
+-#ifndef HAVE_LIBTLS
+-	log_warnx("constraint configured without LibreSSL support");
+-#endif
+ 	return (p);
+ }
+ 
+--- a/src/ntpd.h	2020-08-01 17:13:17.616919800 +0300
++++ b/src/ntpd.h	2020-08-01 20:10:59.523597700 +0300
+@@ -31,6 +31,8 @@
+ #include <poll.h>
+ #include <imsg.h>
+ 
++#include <tls.h>
++
+ #include "ntp.h"
+ #include "log.h"
+ 
+@@ -98,9 +100,20 @@
+ #define CONSTRAINT_SCAN_TIMEOUT		(10)
+ #define CONSTRAINT_MARGIN		(2.0*60)
+ 
+-#define	CONSTRAINT_MAXHEADERLENGTH	8192
++#if defined HAVE_LIBRESSL && !defined(HAVE_OPENSSL)
++#define CONSTRAINT_ENGINE		"libressl"
++#elif defined HAVE_OPENSSL && !defined(HAVE_LIBRESSL)
++#define CONSTRAINT_ENGINE		"openssl"
++#else
++#define CONSTRAINT_ENGINE		"libressl"
++#endif
++
++#define	CONSTRAINT_MAX_HEADERLENGTH	8192
+ #define CONSTRAINT_PASSFD		(STDERR_FILENO + 1)
+ 
++#define CONSTRAINT_CA	SYSCONFDIR "/ssl/cert.pem"
++#define CONSTRAINT_CA_VALIDATION			0x01;
++
+ #define PARENT_SOCK_FILENO		CONSTRAINT_PASSFD
+ 
+ #define NTP_PROC_NAME			"ntp_main"
+@@ -268,6 +281,7 @@ struct ntpd_conf {
+ 	u_int						constraint_errors;
+ 	u_int8_t					*ca;
+ 	size_t						ca_len;
++	int							o_ca;
+ 	int						tmpfail;
+ 	char						*pid_file;
+ 
+@@ -326,7 +340,10 @@ struct ntpd_conf {
+ 	int						constraint_scan_timeout;
+ 	double						constraint_margin;
+ 
+-	int						constraint_maxheaderlength;
++	char					*constraint_engine;
++	int						constraint_max_headerlength;
++	char					*constraint_ca;
++	u_int8_t				constraint_ca_validation;
+ };
+ 
+ struct ctl_show_status {
+@@ -470,6 +487,55 @@ void	 priv_constraint_check_child(pid_t,
+ char	*get_string(u_int8_t *, size_t);
+ int	intlen(int);
+ 
++#ifdef HAVE_LIBRESSL
++/* constraint.c */
++/* constraint-libressl.c */
++struct httpsdate {
++	char			*tls_addr;
++	char			*tls_port;
++	char			*tls_hostname;
++	char			*tls_path;
++	char			*tls_request;
++	struct tls_config	*tls_config;
++	struct tls		*tls_ctx;
++	struct tm		 tls_tm;
++};
++
++struct httpsdate *
++	 httpsdate_init(const char *, const int *, const char *,
++	    const char *, const u_int8_t *, size_t);
++void	 httpsdate_free(void *);
++int	 httpsdate_request(struct httpsdate *, struct timeval *);
++void	*httpsdate_query(const char *, const int *, const char *,
++	    const char *, const u_int8_t *, size_t,
++	    struct timeval *, struct timeval *);
++
++char	*tls_readline(struct tls *, size_t *, size_t *, struct timeval *);
++#endif
++
++#ifdef HAVE_OPENSSL
++/* constraint.c */
++/* constraint-openssl.c */
++struct o_httpsdate {
++	struct	constraint		*cstr;
++	char			*tls_path;
++	char			*tls_request;
++	const SSL_METHOD			*tls_method;
++	SSL_CTX			*tls_ctx;
++	SSL			*tls_conn;
++	struct tm		 tls_tm;
++};
++
++struct o_httpsdate *	o_httpsdate_init(struct constraint *, const int *);
++void	 o_httpsdate_free(void *);
++int	 o_httpsdate_request(struct o_httpsdate *, struct timeval *);
++void	*o_httpsdate_query(struct constraint *,
++		const int *, struct timeval *, struct timeval *);
++
++char	*o_tls_readline(SSL *, size_t *, size_t *, struct timeval *);
++void	openssl_lasterr(void);
++#endif
++
+ /* util.c */
+ double			 gettime_corrected(void);
+ double			 gettime_from_timeval(struct timeval *);
+--- a/src/ntpd.c	2020-08-01 17:13:23.406919806 +0300
++++ b/src/ntpd.c	2020-08-02 01:53:17.636952520 +0300
+@@ -260,6 +260,20 @@ main(int argc, char *argv[])
+ 	if (lconf.automatic)
+ 		lconf.settime = 1;
+ 
++#if __linux__
++	// FIXME
++	/* 
++	 * Forcefully turn off validation check on Linux due to permission issues.
++	 * Use seccomp to fix this?
++	 * See https://lwn.net/Articles/767137/
++	 */
++	if (conf->constraint_ca_validation == 1) {
++		log_info("warning: turning off constraint certificate validation due to"
++		" insufficient read permissions");
++		conf->constraint_ca_validation = 0;
++	}
++#endif
++
+ 	if (pname != NULL) {
+ 		/* Remove our proc arguments, so child doesn't need to. */
+ 		if (sanitize_argv(&argc0, &argv0) == -1)
+@@ -333,8 +347,10 @@ main(int argc, char *argv[])
+ 	 * Constraint processes are forked with certificates in memory,
+ 	 * then privdrop into chroot before speaking to the outside world.
+ 	 */
+-	if (unveil(tls_default_ca_cert_file(), "r") == -1)
+-		err(1, "main process: can't unveil certificate file for reading");
++	if (conf->constraint_ca_validation == 1) {
++		if (unveil(conf->constraint_ca, "r") == -1)
++			err(1, "main process: can't unveil certificate file for reading");
++	}
+ 	if (unveil("/usr/sbin/ntpd", "x") == -1)
+ 		err(1, "main process: can't unveil ntpd executable for execute operations");
+ 	if (pledge("stdio rpath inet settime proc exec id", NULL) == -1)
+--- a/src/ntp.c	2020-08-01 18:38:24.803591850 +0300
++++ b/src/ntp.c	2020-08-01 19:38:58.810262343 +0300
+@@ -166,8 +166,22 @@ ntp_main(struct ntpd_conf *nconf, struct
+ 	constraint_cnt = 0;
+ 	conf->constraint_median = 0;
+ 	conf->constraint_last = getmonotime();
+-	TAILQ_FOREACH(cstr, &conf->constraints, entry)
+-		constraint_cnt += constraint_init(cstr);
++
++	if (strcmp("libressl", conf->constraint_engine) == 0)
++#ifndef HAVE_LIBRESSL
++		warnx("main process: OpenNTPD configured without LibreSSL support");
++#else
++		TAILQ_FOREACH(cstr, &conf->constraints, entry)
++			constraint_cnt += constraint_init(cstr);
++#endif
++
++	if (strcmp("openssl", conf->constraint_engine) == 0)
++#ifndef HAVE_OPENSSL
++		warnx("main process: OpenNTPD configured without OpenSSL support");
++#else
++		TAILQ_FOREACH(cstr, &conf->constraints, entry)
++			constraint_cnt += constraint_init(cstr);
++#endif
+ 
+ 	TAILQ_FOREACH(p, &conf->ntp_peers, entry)
+ 		client_peer_init(p);
+--- a/src/parse.y	2020-08-01 21:17:48.293601924 +0300
++++ b/src/parse.y	2020-08-01 21:22:32.776935560 +0300
+@@ -148,7 +148,10 @@ typedef struct {
+ %token	_CONSTRAINT_SCAN_TIMEOUT
+ %token	_CONSTRAINT_MARGIN
+ 
+-%token	_CONSTRAINT_MAXHEADERLENGTH
++%token	_CONSTRAINT_ENGINE
++%token	_CONSTRAINT_MAX_HEADERLENGTH
++%token	_CONSTRAINT_CA
++%token	_CONSTRAINT_CA_VALIDATION
+ 
+ %token	<v.string>		STRING
+ %token	<v.number>		NUMBER
+@@ -594,8 +597,35 @@ main		: LISTEN ON address listen_opts	{
+ 		| _CONSTRAINT_MARGIN pos_num {
+ 			conf->constraint_margin = (double)$2.pos_num;
+ 		}
+-		| _CONSTRAINT_MAXHEADERLENGTH pos_num {
+-			conf->constraint_maxheaderlength = $2.pos_num;
++		| _CONSTRAINT_MAX_HEADERLENGTH pos_num {
++			conf->constraint_max_headerlength = $2.pos_num;
++		}
++		| _CONSTRAINT_ENGINE STRING {
++			if (strcmp("libressl", $2) == 0 ||
++			strcmp("openssl", $2) == 0) {
++				conf->constraint_engine = $2;
++			} else {
++				yyerror("Invalid TLS engine specified."
++				" Expected 'libressl' or 'openssl'");
++				YYERROR;
++			}
++		}
++		| _CONSTRAINT_CA STRING {
++			conf->constraint_ca = $2;
++		}
++		| _CONSTRAINT_CA_VALIDATION STRING {
++			u_int8_t	val;
++
++			if (strcmp("true", $2) == 0) {
++				val = 0x01;
++			} else if (strcmp("false", $2) == 0) {
++				val = 0x00;
++			} else {
++				yyerror("option constraint_ca_validation expects either 'true' or 'false'");
++				YYERROR;
++			}
++
++			conf->constraint_ca_validation = val;
+ 		}
+ 		;
+ 
+@@ -856,9 +886,12 @@ lookup(char *s)
+ 		{ "auto_replies",	_AUTO_REPLIES,	"single" },
+ 		{ "auto_threshold",	_AUTO_THRESHOLD,	"single" },
+ 		{ "constraint",		CONSTRAINT,	"multiple" },
++		{ "constraint_ca",		_CONSTRAINT_CA,	"single" },
++		{ "constraint_ca_validation",		_CONSTRAINT_CA_VALIDATION,	"single" },
++		{ "constraint_engine",		_CONSTRAINT_ENGINE,	"single" },
+ 		{ "constraint_error_margin",		_CONSTRAINT_ERROR_MARGIN,	"single" },
+ 		{ "constraint_margin",		_CONSTRAINT_MARGIN,	"single" },
+-		{ "constraint_maxheaderlength",		_CONSTRAINT_MAXHEADERLENGTH,	"single" },
++		{ "constraint_max_headerlength",		_CONSTRAINT_MAX_HEADERLENGTH,	"single" },
+ 		{ "constraint_retry_interval",	_CONSTRAINT_RETRY_INTERVAL,	"single" },
+ 		{ "constraint_scan_interval",		_CONSTRAINT_SCAN_INTERVAL,	"single" },
+ 		{ "constraint_scan_timeout",		_CONSTRAINT_SCAN_TIMEOUT,	"single" },
+@@ -1319,7 +1352,10 @@ init_conf(struct ntpd_conf *conf)
+ 	conf->constraint_scan_timeout			= CONSTRAINT_SCAN_TIMEOUT; // 10;
+ 	conf->constraint_margin			= CONSTRAINT_MARGIN; // 2.0*60;
+ 
+-	conf->constraint_maxheaderlength			= CONSTRAINT_MAXHEADERLENGTH; // 8192;
++	conf->constraint_engine			= CONSTRAINT_ENGINE; // "libressl";
++	conf->constraint_max_headerlength			= CONSTRAINT_MAX_HEADERLENGTH; // 8192;
++	conf->constraint_ca			= CONSTRAINT_CA; // /etc/ssl/cert.pem;
++	conf->constraint_ca_validation		= CONSTRAINT_CA_VALIDATION; // false;
+ }
+ 
+ void
+@@ -1394,7 +1430,16 @@ print_conf(struct ntpd_conf *lconf)
+ 	fprintf(stdout, "Constraint retry interval: %d seconds\n",   conf->constraint_retry_interval);
+ 	fprintf(stdout, "Constraint scan interval: %d seconds\n",            conf->constraint_scan_interval);
+ 	fprintf(stdout, "Constraint scan timeout: %d seconds\n",             conf->constraint_scan_timeout);
+-	fprintf(stdout, "Constraint maximum HTTP header length: %d bytes\n", conf->constraint_maxheaderlength);
++	fprintf(stdout, "Constraint TLS engine: %s\n",                       conf->constraint_engine);
++	fprintf(stdout, "Constraint maximum HTTP header length: %d bytes\n", conf->constraint_max_headerlength);
++	fprintf(stdout, "Constraint certificate file: %s\n",                 conf->constraint_ca);
++
++	if ((conf->constraint_ca_validation) == 0x01)
++		*boolean = "true";
++	else if ((conf->constraint_ca_validation) == 0x00)
++		*boolean = "false";
++
++	fprintf(stdout, "Constraint certificate validation: %s\n",           *boolean);
+ 	fprintf(stdout, "\n");
+ 
+ 	TAILQ_FOREACH(sens, &conf->ntp_conf_sensors, entry) {
+--- a/src/ntpd.conf.5	2020-08-02 02:31:01.526954911 +0300
++++ b/src/ntpd.conf.5	2020-08-02 02:26:08.596954600 +0300
+@@ -14,7 +14,7 @@
+ .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ .\"
+-.Dd $Mdocdate: August 02 2020 $
++.Dd $Mdocdate: August 01 2020 $
+ .Dt NTPD.CONF 5
+ .Os
+ .Sh NAME
+@@ -235,8 +235,8 @@ invalid.
+ .Pp
+ Support for constraints is only available if
+ .Xr ntpd 8
+-has been linked with libtls from LibreSSL. Configuring a constraint
+-without libtls causes
++has been linked either with libtls from LibreSSL or with OpenSSL.
++Configuring a constraint without proper TLS library support causes
+ .Xr ntpd 8
+ to log a warning message on startup.
+ .Bl -tag -width Ds
+@@ -292,7 +292,6 @@ adaption to system policy and flexibilit
+ keywords may be specified only once within the configuration file. The
+ following values can be changed from the highlighted defaults:
+ .Bl -tag -width Ds
+-
+ .It Ic auto_replies Ar number
+ During OpenNTPD initialization, all NTP peers get automatic time offset value,
+ if pre-conditions for automatic interval adjustment are being met. The
+@@ -365,6 +364,39 @@ to
+ 4
+ .El
+ .Ed
++.It Xo Ic constraint_ca Ar path-to-file
++.Xc
++PEM-formatted certificate bundle file for constraint HTTPS connections.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++/etc/ssl/cert.pem
++.El
++.Ed
++.It Ic constraint_ca_validation Ar true | false
++Whether to validate constraint HTTPS server certificate.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++true
++.El
++.Ed
++.It Ic constraint_engine Ar libressl | openssl
++Use either LibreSSL (
++.Ic libressl
++) or OpenSSL (
++.Ic openssl
++) for constraint HTTPS server
++connections. To support chosen TLS engine,
++.Xr ntpd 8
++must be compiled and run with proper libraries installed
++on the system. Only LibreSSL and OpenSSL are supported.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++libressl (defaults to openssl if only openssl found during compile time)
++.El
++.Ed
+ .It Ic constraint_error_margin Ar number
+ Accepted number of errors during constraint process. If error count exceeds
+ this value multiplied by calculated peer count, constraint connection will
+@@ -385,7 +417,7 @@ margin value will be ignored.
+ 120
+ .El
+ .Ed
+-.It Ic constraint_maxheaderlength Ar length
++.It Ic constraint_max_headerlength Ar length
+ Maximum allowed HTTP header length of constraint HTTPS server reply to
+ be fetched in bytes. If the value is exceeded during processing,
+ nothing is returned and constraint check fails.
+--- a/src/Makefile.am	2020-07-31 23:00:40.000000000 +0300
++++ b/src/Makefile.am	2020-08-01 19:24:02.713594734 +0300
+@@ -34,11 +34,17 @@ ntpd_LDADD += $(top_builddir)/compat/lib
+ 
+ ntpd_SOURCES = client.c
+ ntpd_SOURCES += config.c
+-if HAVE_LIBTLS
++if HAVE_SSL
+ ntpd_SOURCES += constraint.c
+ else
+ ntpd_SOURCES += constraint-disabled.c
+ endif
++if HAVE_LIBRESSL
++ntpd_SOURCES += constraint-libressl.c
++endif
++if HAVE_OPENSSL
++ntpd_SOURCES += constraint-openssl.c
++endif
+ ntpd_SOURCES += control.c
+ ntpd_SOURCES += log.c
+ ntpd_SOURCES += log.h
+--- a/ChangeLog	2020-07-31 23:00:40.000000000 +0300
++++ b/ChangeLog	2020-08-02 14:01:47.093664999 +0300
+@@ -30,7 +30,13 @@
+ 	* Prevent the case of multiple ntpds running at once by checking presence
+ 	  of the local control socket.
+ 
+-	* TLS certificates are now searched in TLS_CA_CERT_FILE.
++	* Many previously hardcoded values are now configurable via conf file.
++
++	* Implemented OpenSSL support. Either LibreSSL or OpenSSL can be used.
++
++	* Improved log entries interpretation.
++
++	* Updated manual.
+ 
+ 	The libtls library, as shipped with LibreSSL 3.1.0 or later, is
+ 	required to use the HTTPS constraint feature, though it is not

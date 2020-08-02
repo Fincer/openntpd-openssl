@@ -1,5 +1,5 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 14:12:40 +0300
+Date: Sun, 02 Aug 2020 20:55:36 +0300
 Subject: Unhardcode majority of configuration settings, update manual
 
 
@@ -1903,4 +1903,196 @@ Subject: Unhardcode majority of configuration settings, update manual
 +.Ed
 +.It Ic interval_query_timeout Ar seconds
 +Retry time in seconds after failed connection attempt to a remote NTP server.
-+.Bd -li
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++300
++.El
++.Ed
++.It Ic log_negligible_adjfreq Ar ppm
++Negligible frequency rate to not log in PPM.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++0.05
++.El
++.Ed
++.It Ic log_negligible_adjtime Ar milliseconds
++Negligible drift time to not log in milliseconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++32
++.El
++.Ed
++.It Ic max_display_width Ar number
++Maximum number of characters in a
++.Xr ntpctl 8
++report line (peers, status, sensors and all).
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++80
++.El
++.Ed
++.It Ic max_frequency_adjust Ar decimal
++Maximum allowed frequency correction per iteration.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++0.0128
++.El
++.Ed
++.It Ic max_send_errors Ar number
++Maximum number of errors tolerated before reconnecting to a remote NTP server.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++3
++.El
++.Ed
++.It Ic max_servers_dns Ar number
++Maximum number of remote NTP server IP addresses fetched per DNS query.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++8
++.El
++.Ed
++.It Ic ntpd_user Ar user name
++.Xr ntpd 8
++process user name. Group name and working directory are internally fetched by
++.Xr getpwnam 3
++\&.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++ntp
++.El
++.Ed
++.It Ic qscale_off_min Ar decimal
++Minimum scale value used for dynamically adjusting NTP server query
++interval time. If median NTP server & sensor offset value is lower
++than this value, then this value is used for scale calculation as
++minimum value. Otherwise, the offset value is used as minimum
++value. The offset value is a combined median value, based on all
++NTP server & sensor offset values.
++.Pp
++The determined frequency scale is
++.Ic qscale_off_max
++/ {
++.Ic qscale_off_min
++OR median offset }
++\&.
++.Pp
++In the end, the calculated scale value is multiplied one of
++.Ic interval_query_*
++values (pathetic, aggressive, normal)
++on a client side, and ultimately used for dynamic adjustment of
++client-side NTP server query interval time for
++.Xr ntpd 8
++process.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++0.001
++.El
++.Ed
++.It Ic qscale_off_max Ar decimal
++Maximum scale value used for dynamically adjusting NTP server query
++interval time. This value is used either with a median NTP server &
++sensor offset value, described in
++.Ic qscale_off_min
++section, or directly with the value
++.Ic qscale_off_min
++\&. The more detailed description about further use of this value is above
++and in
++.Ic interval_query_*
++sections.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++0.050
++.El
++.Ed
++.It Ic querytime_max Ar seconds
++Maximum time reserved for a single NTP server query in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++15
++.El
++.Ed
++.It Ic sensor_data_maxage Ar seconds
++Sensor data maximum valid age in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++900
++.El
++.Ed
++.It Ic sensor_default_refid Ar string
++Sensor default reference ID string.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++"HARD"
++.El
++.Ed
++.It Ic sensor_offsets Ar seconds
++Maximum allowed sensor time offset in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++6
++.El
++.Ed
++.It Ic sensor_query_interval Ar seconds
++Sensor query interval in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++15
++.El
++.Ed
++.It Ic sensor_scan_interval Ar seconds
++Scan interval for new sensors in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++60
++.El
++.Ed
++.It Ic settime_timeout Ar seconds
++Maximum time to wait for a constraint to reply during OpenNTPD initial automatic mode.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++100
++.Ed
++.El
+ .Sh FILES
+ .Bl -tag -width /etc/examples/ntpd.conf -compact
+ .It Pa /etc/ntpd.conf
+ Default
+ .Xr ntpd 8
+ configuration file.
++.It Pa /var/db/ntpd.drift
++Default drift file.
++.It Pa /var/run/ntpd.sock
++Default socket file for communication with
++.Xr ntpctl 8 .
+ .It Pa /etc/examples/ntpd.conf
+ Example configuration file.
+ .El
+--- a/src/client.c	2020-08-02 02:05:18.690286616 +0300
++++ b/src/client.c	2020-08-02 02:05:30.260286629 +0300
+@@ -279,7 +279,7 @@ handle_auto(uint8_t trusted, double offs
+ 	}
+ 	/* collect some more */
+ 	v[count++] = offset;
+-	if (count < AUTO_REPLIES)
++	if (count < conf->auto_replies)
+ 		return;
+ 
+ 	/* we have enough */
