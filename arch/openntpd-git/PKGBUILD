@@ -1,0 +1,107 @@
+# Maintainer: Pekka Helenius <fincer89[at]hotmail[dot]com>
+# Contributor: Levente Polyak <anthraxx[at]archlinux[dot]org>
+# Contributor: Vesa Kaihlavirta <vegai@iki.fi>
+# Contributor: Mark Rosenstand <mark@borkware.net>
+# Contributor: Giorgio Lando <patroclo7@gmail.com> (adjtimex patch)
+# Contributor: Alexander Rødseth <rodseth@gmail.com>
+
+pkgname=openntpd-git
+_pkgname=openntpd
+pkgver=223.cc32929
+pkgrel=1
+pkgdesc='Free, easy to use implementation of the Network Time Protocol (Git version)'
+url='http://www.openntpd.org/'
+arch=('any')
+license=('BSD')
+provides=('openntpd')
+conflicts=('openntpd')
+replaces=('openntpd')
+makedepends=('openssl') # 'libressl'
+optdepends=(
+	'openssl: HTTPS constraint support'
+	# 'libressl: HTTPS constraint support'
+)
+conflicts=('ntp')
+backup=('etc/ntpd.conf')
+source=(
+    # For patch compatibility reasons. Feature freeze alike.
+    ${_pkgname}::git+https://github.com/openntpd-portable/openntpd-portable.git#commit=cc3292981b83f7d691e96dc5e5a5d30af6f98454
+
+    openntpd.sysusers
+    openntpd.service
+
+    1-patch_better-logs.patch
+    2-patch_ntpctl-sensors-tolowercase.patch
+    3-patch_unhardcode-ports.patch
+    4-patch_peercount-init.patch
+    5-patch_debugmode-fix.patch
+    6-patch_unhardcode-conf.patch
+    7-patch_implement-openssl.patch
+    8-patch_update-conf.patch
+
+)
+sha512sums=('SKIP'
+            'b6bb4f39eb435ce6c3314ea4a31430a1f8b70898d17d1fe07fa487bec0e79c022b004d3c11366f0f994546f454e5418caf5b3d7e6e1a205598d2bc8140417f7a'
+            'c58d48de67cd1ce0df7ea60def26db38b9d7409b64d097639a4cde3f4774a4bcc1159f993f37c5c61781cab1e2d1b8a35005030b28b0c9f0f6e0f81053586dfa'
+            'ceeedb647c08dad750e4fdfd397ff45e418f522e046fb7a5a358e9195fd9f0ce2f6135373ac39e2add9995fdaf2bd1a9d4ca58d0e9d4d800636ec0d38d2e451e'
+            'b061d557c3687aad61772ecdd459cdfe1941566488c868196b6c322b363d5f7046311de8c38bd8607a87cf6bf113d9e5c74434c32181daa1184866deee1701a3'
+            '6e672b4142a6e0ccae7b97572101fc960d0c368de6bcb01539f9ed2369d5dece169b38b770f91e8f31aa35b5ddc662a037011cf97b5c396fead4032543da75ad'
+            '68ad6657505dea416db04a9e336e5f04e669da6fd652ada2a3722d4f238f322d5aae00e70128d6fccba4ee1c9737a065f7999c11d60ad508008e13f9e322b00a'
+            '836e60283480f7534699e72dec14b4dd2f52386a5a35f5e3fd64be730785f93b3b52aea478f3739e801d9f00229fd086409da7864cba9efc8c7a0348883ba2a3'
+            '1b6d2c8c0652ac7b6cd2ede79c699eeeb5422a657d5d62bf83507e0d488bbfed836715325c8ddc588529c05810916d83f2cf12b774cdb6abf960d0317e5198fc'
+            '23143e9640b9b9211c060c4fb8dec28e8fe97683420acdc2647b6de3b85b4bbd4aebab75d33c83226c10aa3c1813aba232968483626f32bcd81c56b5283c4dda'
+            '43b64f197f32b0e3655aad7935d297593c7c570db0853820799a517f38554d2474f9ffc08ea018f9b3e9a644038925a79cac6e6d91e0d84bcd81600a098c71e3')
+validpgpkeys=('A1EB079B8D3EB92B4EBD3139663AF51BD5E4D8D5') # Brent Cook <bcook@openbsd.org>
+
+pkgver() {
+    cd ${_pkgname}
+
+    if [[ $(git describe) ]]; then
+        git describe --long --tags | sed 's/\([^-]*-g\)/r\1/;s/-/./g'
+    else
+        echo $(git rev-list --count HEAD).$(git rev-parse --short HEAD)
+    fi
+}
+
+
+prepare() {
+    cd ${_pkgname}
+
+    # For patch compatibility reasons. Feature freeze alike.
+    sed -r -i 's/openntpd-portable(\/openntpd-openbsd.git)/Fincer\1/' ./update.sh
+    ./update.sh
+
+    for p in ../*.patch; do
+      patch -Np1 -i ${p}
+    done
+
+    autoreconf -fiv
+}
+
+build() {
+    cd ${_pkgname}
+    CFLAGS+=' -fcommon -L/usr/lib/libressl/ -Wl,-rpath,/usr/lib/libressl/' ./configure \
+        --prefix=/usr \
+        --sysconfdir=/etc \
+        --sbindir=/usr/bin \
+        --with-privsep-user=ntp \
+        --localstatedir=/var \
+        --with-openssl=yes \
+        --with-libressl=no
+    make
+}
+
+package() {
+    cd ${_pkgname}
+    make DESTDIR="${pkgdir}" install
+
+    rmdir "${pkgdir}/var/run"
+    install -d "${pkgdir}/var/lib/ntp"
+    install -Dm 644 COPYING -t "${pkgdir}/usr/share/licenses/${_pkgname}"
+    install -Dm 644 "${srcdir}/openntpd.service" -t "${pkgdir}/usr/lib/systemd/system"
+    install -Dm 644 "${srcdir}/openntpd.sysusers" "${pkgdir}/usr/lib/sysusers.d/openntpd.conf"
+    install -Dm 644 "ntpd.conf" "${pkgdir}/etc/examples/ntpd.conf"
+
+    install -d "${pkgdir}/usr/lib/systemd/ntp-units.d"
+    echo ${_pkgname}.service > "${pkgdir}/usr/lib/systemd/ntp-units.d/${_pkgname}.list"
+}
