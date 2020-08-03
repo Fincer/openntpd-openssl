@@ -1,5 +1,5 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 20:55:36 +0300
+Date: Tue, 04 Aug 2020 01:52:09 +0300
 Subject: Provide human-readable error messages for easier process interpretation
 
 
@@ -1193,7 +1193,7 @@ Subject: Provide human-readable error messages for easier process interpretation
  	    &offset, sizeof(offset));
  	conf->settime = 0;
 --- a/src/ntpd.c	2020-08-01 00:19:23.455725749 +0300
-+++ b/src/ntpd.c	2020-08-01 13:33:10.798104786 +0300
++++ b/src/ntpd.c	2020-08-03 23:31:10.898621932 +0300
 @@ -102,7 +102,7 @@ writepid(struct ntpd_conf *lconf)
  	if (lconf->pid_file != NULL) {
  		FILE *f = fopen(lconf->pid_file, "w");
@@ -1545,7 +1545,7 @@ Subject: Provide human-readable error messages for easier process interpretation
  				usage();
  			}
  			break;
-@@ -736,18 +735,18 @@ ctl_main(int argc, char *argv[])
+@@ -736,21 +735,21 @@ ctl_main(int argc, char *argv[])
  		/* NOTREACHED */
  
  	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
@@ -1567,7 +1567,11 @@ Subject: Provide human-readable error messages for easier process interpretation
 +		err(1, "ntpctl: can't restrict privileges");
  
  	if ((ibuf_ctl = malloc(sizeof(struct imsgbuf))) == NULL)
- 		err(1, NULL);
+-		err(1, NULL);
++		err(1, "ntpctl: can't allocate memory for data buffer");
+ 	imsg_init(ibuf_ctl, fd);
+ 
+ 	switch (action) {
 @@ -771,24 +770,24 @@ ctl_main(int argc, char *argv[])
  		    0, 0, -1, NULL, 0);
  		break;

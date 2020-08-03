@@ -1,10 +1,10 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 20:55:36 +0300
+Date: Tue, 04 Aug 2020 01:52:15 +0300
 Subject: Unhardcode majority of configuration settings, update manual
 
 
 --- a/src/sensors.c	2020-07-31 23:58:46.000000000 +0300
-+++ b/src/sensors.c	2020-08-01 12:22:05.214766958 +0300
++++ b/src/sensors.c	2020-08-03 23:12:53.431633678 +0300
 @@ -145,7 +145,7 @@ sensor_add(int sensordev, char *dxname)
  	s->sensordevid = sensordev;
  
@@ -30,42 +30,21 @@ Subject: Unhardcode majority of configuration settings, update manual
  		s->update.good = 0;
  
  	if (!sensor_probe(s->sensordevid, dxname, &sensor)) {
-@@ -234,7 +234,7 @@ sensor_query(struct ntp_sensor *s)
- 	log_debug("sensor %s: offset %f", s->device,
- 	    s->offsets[s->shift].offset);
+--- a/src/ntpd.c	2020-08-03 23:29:45.150837701 +0300
++++ b/src/ntpd.c	2020-08-03 23:48:03.062564686 +0300
+@@ -58,10 +58,10 @@ void		ntpd_adjfreq(double, int);
+ void		ntpd_settime(double);
+ void		readfreq(void);
+ int		writefreq(double);
+-void		ctl_main(int, char*[]);
++void		ctl_main(int, char*[], const struct ntpd_conf *);
+ const char     *ctl_lookup_option(char *, const char **);
+ void		show_status_msg(struct imsg *);
+-void		show_peer_msg(struct imsg *, int);
++void		show_peer_msg(struct imsg *, int, const struct ntpd_conf *);
+ void		show_sensor_msg(struct imsg *, int);
+ void		update_time_sync_status(int);
  
--	if (++s->shift >= SENSOR_OFFSETS) {
-+	if (++s->shift >= conf->sensor_offsets) {
- 		s->shift = 0;
- 		sensor_update(s);
- 	}
-@@ -247,19 +247,19 @@ sensor_update(struct ntp_sensor *s)
- 	struct ntp_offset	**offsets;
- 	int			  i;
- 
--	if ((offsets = calloc(SENSOR_OFFSETS, sizeof(struct ntp_offset *))) ==
-+	if ((offsets = calloc(conf->sensor_offsets, sizeof(struct ntp_offset *))) ==
- 	    NULL)
- 		fatal("sensor %s: can't allocate memory for data update", s->device);
- 
--	for (i = 0; i < SENSOR_OFFSETS; i++)
-+	for (i = 0; i < conf->sensor_offsets; i++)
- 		offsets[i] = &s->offsets[i];
- 
--	qsort(offsets, SENSOR_OFFSETS, sizeof(struct ntp_offset *),
-+	qsort(offsets, conf->sensor_offsets, sizeof(struct ntp_offset *),
- 	    offset_compare);
- 
--	i = SENSOR_OFFSETS / 2;
-+	i = conf->sensor_offsets / 2;
- 	memcpy(&s->update, offsets[i], sizeof(s->update));
--	if (SENSOR_OFFSETS % 2 == 0) {
-+	if (conf->sensor_offsets % 2 == 0) {
- 		s->update.offset =
- 		    (offsets[i - 1]->offset + offsets[i]->offset) / 2;
- 	}
---- a/src/ntpd.c	2020-08-01 16:07:32.660248971 +0300
-+++ b/src/ntpd.c	2020-08-01 17:13:23.406919806 +0300
 @@ -135,7 +135,7 @@ auto_preconditions(const struct ntpd_con
  #endif
  	constraints = !TAILQ_EMPTY(&cnf->constraints);
@@ -75,24 +54,29 @@ Subject: Unhardcode majority of configuration settings, update manual
  }
  
  #define POLL_MAX		8
-@@ -195,14 +195,14 @@ main(int argc, char *argv[])
- 		switch (ch) {
- 		case 'd':
- 			lconf.debug = 1;
--			lconf.verbose = 2;
-+            lconf.verbose = 2;
- 			break;
- 		case 'f':
- 			conffile = optarg;
- 			break;
- 		case 'n':
- 			lconf.debug = 1;
--			lconf.verbose = 2;
-+            lconf.verbose = 2;
- 			lconf.noaction = 1;
- 			break;
- 		case 'P':
-@@ -253,8 +253,8 @@ main(int argc, char *argv[])
+@@ -171,15 +171,16 @@ main(int argc, char *argv[])
+ 
+ 	__progname = get_progname(argv[0]);
+ 
+-	if (strcmp(__progname, "ntpctl") == 0) {
+-		ctl_main(argc, argv);
+-		/* NOTREACHED */
+-	}
+-
+ 	conffile = CONFFILE;
+ 
+ 	memset(&lconf, 0, sizeof(lconf));
+ 
++	if (strcmp(__progname, "ntpctl") == 0) {
++		parse_config(conffile, &lconf);
++		ctl_main(argc, argv, &lconf);
++		/* NOTREACHED */
++	}
++
+ #ifndef HAVE_SETPROCTITLE
+ 	/* Prepare for later setproctitle emulation */
+ 	saved_argv = calloc(argc + 1, sizeof(*saved_argv));
+@@ -253,8 +254,8 @@ main(int argc, char *argv[])
  	if (geteuid())
  		errx(1, "main process: need root privileges");
  
@@ -103,7 +87,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  
  	lconf.automatic = auto_preconditions(&lconf);
  	if (lconf.automatic)
-@@ -277,7 +277,7 @@ main(int argc, char *argv[])
+@@ -277,7 +278,7 @@ main(int argc, char *argv[])
  
  		fatalx("main process: process '%s' failed (%s)", pname, __func__);
  	} else {
@@ -112,7 +96,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  			fatalx("OpenNTPD is already running");
  	}
  
-@@ -295,7 +295,7 @@ main(int argc, char *argv[])
+@@ -295,7 +296,7 @@ main(int argc, char *argv[])
  		}
  	} else {
  		settime_deadline = getmonotime();
@@ -121,7 +105,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	}
  
  	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNSPEC,
-@@ -311,6 +311,10 @@ main(int argc, char *argv[])
+@@ -311,6 +312,10 @@ main(int argc, char *argv[])
  	start_child(NTP_PROC_NAME, pipe_chld[1], argc0, argv0);
  
  	log_procinit("[priv]");
@@ -132,7 +116,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	readfreq();
  
  	signal(SIGTERM, sighdlr);
-@@ -370,7 +374,7 @@ main(int argc, char *argv[])
+@@ -370,7 +375,7 @@ main(int argc, char *argv[])
  			}
  
  		if (nfds == 0 && lconf.settime &&
@@ -141,7 +125,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  			lconf.settime = 0;
  			timeout = INFTIM;
  			log_init(logdest, lconf.verbose, LOG_DAEMON);
-@@ -520,7 +524,7 @@ ntpd_adjtime(double d)
+@@ -520,7 +525,7 @@ ntpd_adjtime(double d)
  {
  	int		synced = 0;
  	static int	firstadj = 1;
@@ -150,7 +134,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  
  	d += getoffset();
  	if (d >= threshold || d <= -1 * threshold)
-@@ -581,8 +585,8 @@ ntpd_adjfreq(double relfreq, int wrlog)
+@@ -581,8 +586,8 @@ ntpd_adjfreq(double relfreq, int wrlog)
  	r = writefreq(curfreq / 1e9 / (1LL << 32));
  	ppmfreq = relfreq * 1e6;
  	if (wrlog) {
@@ -161,7 +145,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  			log_info("main process: adjusting clock frequency by %f to %f ppm%s",
  			    ppmfreq, curfreq / 1e3 / (1LL << 32),
  			    r ? "" : " (no drift file)");
-@@ -634,13 +638,13 @@ readfreq(void)
+@@ -634,13 +639,13 @@ readfreq(void)
  	int fd;
  	double d;
  
@@ -178,7 +162,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  		return;
  	}
  
-@@ -654,7 +658,7 @@ readfreq(void)
+@@ -654,7 +659,7 @@ readfreq(void)
  			d /= 1e6;	/* scale from ppm */
  			ntpd_adjfreq(d, 0);
  		} else
@@ -187,7 +171,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	}
  }
  
-@@ -671,7 +675,7 @@ writefreq(double d)
+@@ -671,7 +676,7 @@ writefreq(double d)
  	r = fprintf(freqfp, "%.3f\n", d * 1e6);	/* scale to ppm */
  	if (r < 0 || fflush(freqfp) != 0) {
  		if (warnonce) {
@@ -196,7 +180,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  			warnonce = 0;
  		}
  		clearerr(freqfp);
-@@ -679,7 +683,7 @@ writefreq(double d)
+@@ -679,13 +684,13 @@ writefreq(double d)
  	}
          off = ftello(freqfp);
          if (off == -1 || ftruncate(fileno(freqfp), off) == -1)
@@ -205,44 +189,68 @@ Subject: Unhardcode majority of configuration settings, update manual
          fsync(fileno(freqfp));
  	return 1;
  }
-@@ -693,7 +697,7 @@ ctl_main(int argc, char *argv[])
+ 
+ void
+-ctl_main(int argc, char *argv[])
++ctl_main(int argc, char *argv[], const struct ntpd_conf *cconf)
+ {
+ 	struct sockaddr_un	 sa;
+ 	struct imsg		 imsg;
+@@ -693,7 +698,7 @@ ctl_main(int argc, char *argv[])
  	int			 fd, n, done, ch, action;
  	char			*sockname;
  
 -	sockname = CTLSOCKET;
-+	sockname = conf->ctlsocket;
++	sockname = cconf->ctlsocket;
  
  	if (argc < 2) {
  		usage();
-@@ -932,7 +936,7 @@ show_peer_msg(struct imsg *imsg, int cal
+@@ -741,6 +746,7 @@ ctl_main(int argc, char *argv[])
  
- 	cpeer = (struct ctl_show_peer *)imsg->data;
+ 	memset(&sa, 0, sizeof(sa));
+ 	sa.sun_family = AF_UNIX;
++
+ 	if (strlcpy(sa.sun_path, sockname, sizeof(sa.sun_path)) >=
+ 	    sizeof(sa.sun_path))
+ 		errx(1, "ntpctl: control socket name is too long");
+@@ -799,7 +805,7 @@ ctl_main(int argc, char *argv[])
+ 				done = 1;
+ 				break;
+ 			case CTL_SHOW_PEERS:
+-				show_peer_msg(&imsg, 0);
++				show_peer_msg(&imsg, 0, cconf);
+ 				if (imsg.hdr.type ==
+ 				    IMSG_CTL_SHOW_PEERS_END)
+ 					done = 1;
+@@ -816,7 +822,7 @@ ctl_main(int argc, char *argv[])
+ 					show_status_msg(&imsg);
+ 					break;
+ 				case IMSG_CTL_SHOW_PEERS:
+-					show_peer_msg(&imsg, 1);
++					show_peer_msg(&imsg, 1, cconf);
+ 					break;
+ 				case IMSG_CTL_SHOW_SENSORS:
+ 					show_sensor_msg(&imsg, 1);
+@@ -911,7 +917,7 @@ show_status_msg(struct imsg *imsg)
+ }
  
--	if (strlen(cpeer->peer_desc) > MAX_DISPLAY_WIDTH - 1)
-+	if (strlen(cpeer->peer_desc) > conf->max_display_width - 1)
- 		fatalx("ntpctl: NTP peer description is too long");
- 
- 	if (firsttime) {
-@@ -953,7 +957,7 @@ show_peer_msg(struct imsg *imsg, int cal
+ void
+-show_peer_msg(struct imsg *imsg, int calledfromshowall)
++show_peer_msg(struct imsg *imsg, int calledfromshowall, const struct ntpd_conf *pconf)
+ {
+ 	struct ctl_show_peer	*cpeer;
+ 	int			 cnt;
+@@ -953,7 +959,7 @@ show_peer_msg(struct imsg *imsg, int cal
  	    cpeer->weight, cpeer->trustlevel, stratum,
  	    (long long)cpeer->next, (long long)cpeer->poll);
  
 -	if (cpeer->trustlevel >= TRUSTLEVEL_BADPEER)
-+	if (cpeer->trustlevel >= conf->trustlevel_badpeer)
++	if (cpeer->trustlevel >= pconf->trustlevel_badpeer)
  		printf("  %12.3fms %9.3fms  %8.3fms\n", cpeer->offset,
  		    cpeer->delay, cpeer->jitter);
  	else
-@@ -982,7 +986,7 @@ show_sensor_msg(struct imsg *imsg, int c
- 
- 	csensor = (struct ctl_show_sensor *)imsg->data;
- 
--	if (strlen(csensor->sensor_desc) > MAX_DISPLAY_WIDTH - 1)
-+	if (strlen(csensor->sensor_desc) > conf->max_display_width - 1)
- 		fatalx("ntpctl: sensor description is too long");
- 
- 	if (firsttime) {
 --- a/src/ntp.c	2020-08-01 15:22:42.000000000 +0300
-+++ b/src/ntp.c	2020-08-01 18:38:24.803591850 +0300
++++ b/src/ntp.c	2020-08-03 23:08:32.397143675 +0300
 @@ -55,7 +55,7 @@ int	ntp_dispatch_imsg_dns(void);
  void	peer_add(struct ntp_peer *);
  void	peer_remove(struct ntp_peer *);
@@ -375,21 +383,6 @@ Subject: Unhardcode majority of configuration settings, update manual
  			continue;
  		for (j = 0; j < p->weight; j++)
  			offsets[i++] = &p->update;
-@@ -784,12 +784,12 @@ priv_adjtime(void)
- 	free(offsets);
- 
- 	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
--		for (i = 0; i < OFFSET_ARRAY_SIZE; i++)
-+		for (i = 0; i < conf->offset_array_size; i++)
- 			p->reply[i].offset -= offset_median;
- 		p->update.good = 0;
- 	}
- 	TAILQ_FOREACH(s, &conf->ntp_sensors, entry) {
--		for (i = 0; i < SENSOR_OFFSETS; i++)
-+		for (i = 0; i < conf->sensor_offsets; i++)
- 			s->offsets[i].offset -= offset_median;
- 		s->update.offset -= offset_median;
- 	}
 @@ -841,13 +841,13 @@ update_scale(double offset)
  	if (offset < 0)
  		offset = -offset;
@@ -418,7 +411,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	return (interval + r);
  }
 --- a/src/control.c	2020-07-31 23:23:56.000000000 +0300
-+++ b/src/control.c	2020-08-01 11:49:36.991431574 +0300
++++ b/src/control.c	2020-08-03 23:06:05.136249122 +0300
 @@ -317,7 +317,7 @@ build_show_status(struct ctl_show_status
  
  	TAILQ_FOREACH(p, &conf->ntp_peers, entry) {
@@ -428,34 +421,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  			cs->valid_peers++;
  	}
  	TAILQ_FOREACH(s, &conf->ntp_sensors, entry) {
-@@ -362,7 +362,7 @@ build_show_peer(struct ctl_show_peer *cp
- 
- 	validdelaycnt = best = 0;
- 	cp->offset = cp->delay = 0.0;
--	for (shift = 0; shift < OFFSET_ARRAY_SIZE; shift++) {
-+	for (shift = 0; shift < conf->offset_array_size; shift++) {
- 		if (p->reply[shift].delay > 0.0) {
- 			cp->offset += p->reply[shift].offset;
- 			cp->delay += p->reply[shift].delay;
-@@ -381,7 +381,7 @@ build_show_peer(struct ctl_show_peer *cp
- 
- 	jittercnt = 0;
- 	cp->jitter = 0.0;
--	for (shift = 0; shift < OFFSET_ARRAY_SIZE; shift++) {
-+	for (shift = 0; shift < conf->offset_array_size; shift++) {
- 		if (p->reply[shift].delay > 0.0 && shift != best) {
- 			cp->jitter += square(p->reply[shift].delay -
- 			    p->reply[best].delay);
-@@ -393,7 +393,7 @@ build_show_peer(struct ctl_show_peer *cp
- 	cp->jitter = sqrt(cp->jitter);
- 
- 	if (p->shift == 0)
--		shift = OFFSET_ARRAY_SIZE - 1;
-+		shift = conf->offset_array_size - 1;
- 	else
- 		shift = p->shift - 1;
- 
-@@ -424,14 +424,14 @@ build_show_sensor(struct ctl_show_sensor
+@@ -424,7 +424,7 @@ build_show_sensor(struct ctl_show_sensor
  
  	now = getmonotime();
  
@@ -464,14 +430,6 @@ Subject: Unhardcode majority of configuration settings, update manual
  	refid = refid == s->refid ? 0 : s->refid;
  
  	snprintf(cs->sensor_desc, sizeof(cs->sensor_desc),
- 	    "%s  %.4s", s->device, (char *)&refid);
- 
- 	if (s->shift == 0)
--		shift = SENSOR_OFFSETS - 1;
-+		shift = conf->sensor_offsets - 1;
- 	else
- 		shift = s->shift - 1;
- 
 @@ -445,7 +445,7 @@ build_show_sensor(struct ctl_show_sensor
  	cs->good = s->update.good;
  	cs->stratum = s->offsets[shift].status.stratum;
@@ -554,7 +512,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  		    res->ai_family != AF_INET6)
  			continue;
 --- a/src/client.c	2020-08-02 02:04:55.666953258 +0300
-+++ b/src/client.c	2020-08-02 02:05:18.690286616 +0300
++++ b/src/client.c	2020-08-03 23:12:14.368300303 +0300
 @@ -57,7 +57,7 @@ client_peer_init(struct ntp_peer *p)
  	p->query->msg.status = MODE_CLIENT | (NTP_VERSION << 3);
  	p->state = STATE_NONE;
@@ -684,42 +642,8 @@ Subject: Unhardcode majority of configuration settings, update manual
  			log_info("NTP client: NTP peer %s is valid now",
  			    log_sockaddr((struct sockaddr *)&p->addr->ss));
  		p->trustlevel++;
-@@ -486,7 +486,7 @@ client_dispatch(struct ntp_peer *p, u_in
- 			priv_settime(p->reply[p->shift].offset, "");
- 	}
- 
--	if (++p->shift >= OFFSET_ARRAY_SIZE)
-+	if (++p->shift >= conf->offset_array_size)
- 		p->shift = 0;
- 
- 	return (0);
-@@ -504,13 +504,13 @@ client_update(struct ntp_peer *p)
- 	 * invalidate it and all older ones
- 	 */
- 
--	for (i = 0; good == 0 && i < OFFSET_ARRAY_SIZE; i++)
-+	for (i = 0; good == 0 && i < conf->offset_array_size; i++)
- 		if (p->reply[i].good) {
- 			good++;
- 			best = i;
- 		}
- 
--	for (; i < OFFSET_ARRAY_SIZE; i++)
-+	for (; i < conf->offset_array_size; i++)
- 		if (p->reply[i].good) {
- 			good++;
- 			if (p->reply[i].delay < p->reply[best].delay)
-@@ -522,7 +522,7 @@ client_update(struct ntp_peer *p)
- 
- 	memcpy(&p->update, &p->reply[best], sizeof(p->update));
- 	if (priv_adjtime() == 0) {
--		for (i = 0; i < OFFSET_ARRAY_SIZE; i++)
-+		for (i = 0; i < conf->offset_array_size; i++)
- 			if (p->reply[i].rcvd <= p->reply[best].rcvd)
- 				p->reply[i].good = 0;
- 	}
 --- a/src/ntpd.h	2020-08-01 01:27:06.000000000 +0300
-+++ b/src/ntpd.h	2020-08-01 17:13:17.616919800 +0300
++++ b/src/ntpd.h	2020-08-03 23:10:00.839597442 +0300
 @@ -56,6 +56,8 @@
  #define	INTERVAL_QUERY_AGGRESSIVE	5
  #define	INTERVAL_QUERY_ULTRA_VIOLENCE	1	/* used at startup for auto */
@@ -747,7 +671,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  #define TRIES_AUTO_DNSFAIL	4	/* DNS tmpfail quick retries */
  
  
-@@ -268,6 +270,63 @@ struct ntpd_conf {
+@@ -268,6 +270,59 @@ struct ntpd_conf {
  	size_t						ca_len;
  	int						tmpfail;
  	char						*pid_file;
@@ -774,8 +698,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +	double				qscale_off_max;
 +
 +	int						querytime_max;
-+	int						offset_array_size;
-+	int						sensor_offsets;
 +	int						settime_timeout;
 +
 +	int						log_negligible_adjtime;
@@ -785,8 +707,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +	double						max_frequency_adjust;
 +
 +	int						max_send_errors;
-+
-+	int						max_display_width;
 +
 +	u_int8_t						filter_adjfreq;
 +	
@@ -811,7 +731,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  };
  
  struct ctl_show_status {
-@@ -363,6 +422,7 @@ extern struct ctl_conns  ctl_conns;
+@@ -363,6 +418,7 @@ extern struct ctl_conns  ctl_conns;
  
  /* parse.y */
  int	 parse_config(const char *, struct ntpd_conf *);
@@ -820,7 +740,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  /* config.c */
  void			 host(const char *, struct ntp_addr **);
 --- a/src/parse.y	2020-08-01 01:51:28.000000000 +0300
-+++ b/src/parse.y	2020-08-01 21:17:48.293601924 +0300
++++ b/src/parse.y	2020-08-03 23:11:12.796264187 +0300
 @@ -52,7 +52,6 @@ int		 yyerror(const char *, ...)
      __attribute__((__format__ (printf, 1, 2)))
      __attribute__((__nonnull__ (1)));
@@ -845,7 +765,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  		char			*string;
  		struct ntp_addr_wrap	*addr;
  		struct opts		 opts;
-@@ -89,8 +91,68 @@ typedef struct {
+@@ -89,8 +91,64 @@ typedef struct {
  %token	SERVER SERVERS SENSOR CORRECTION RTABLE REFID STRATUM WEIGHT
  %token	ERROR
  %token	PORT
@@ -872,8 +792,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +%token _QSCALE_OFF_MAX
 +
 +%token	_QUERYTIME_MAX
-+%token	_OFFSET_ARRAY_SIZE
-+%token	_SENSOR_OFFSETS
 +%token	_SETTIME_TIMEOUT
 +
 +%token	_LOG_NEGLIGIBLE_ADJTIME
@@ -883,8 +801,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +%token	_MAX_FREQUENCY_ADJUST
 +
 +%token	_MAX_SEND_ERRORS
-+
-+%token	_MAX_DISPLAY_WIDTH
 +
 +%token	_FILTER_ADJFREQ
 +
@@ -914,7 +830,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  %type	<v.addr>		address url urllist
  %type	<v.opts>		listen_opts listen_opts_l listen_opt
  %type	<v.opts>		server_opts server_opts_l server_opt
-@@ -103,6 +165,9 @@ typedef struct {
+@@ -103,6 +161,9 @@ typedef struct {
  %type	<v.opts>		weight
  %type	<v.opts>		trusted
  %type	<v.opts>		port
@@ -924,7 +840,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  %%
  
  grammar		: /* empty */
-@@ -385,6 +450,171 @@ main		: LISTEN ON address listen_opts	{
+@@ -385,6 +446,161 @@ main		: LISTEN ON address listen_opts	{
  			free($2);
  			TAILQ_INSERT_TAIL(&conf->ntp_conf_sensors, s, entry);
  		}
@@ -983,12 +899,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +		| _QUERYTIME_MAX pos_num {
 +			conf->querytime_max = $2.pos_num;
 +		}
-+		| _OFFSET_ARRAY_SIZE pos_num {
-+			conf->offset_array_size = $2.pos_num;
-+		}
-+		| _SENSOR_OFFSETS pos_num {
-+			conf->sensor_offsets = $2.pos_num;
-+		}
 +		| _SETTIME_TIMEOUT pos_num {
 +			conf->settime_timeout = $2.pos_num;
 +		}
@@ -1009,10 +919,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +
 +		| _MAX_SEND_ERRORS pos_num {
 +			conf->max_send_errors = $2.pos_num;
-+		}
-+
-+		| _MAX_DISPLAY_WIDTH pos_num {
-+			conf->max_display_width = $2.pos_num;
 +		}
 +
 +		| _AUTO_REPLIES pos_num {
@@ -1096,7 +1002,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  		;
  
  address		: STRING		{
-@@ -587,8 +817,12 @@ opts_default(void)
+@@ -587,8 +803,12 @@ opts_default(void)
  struct keywords {
  	const char	*k_name;
  	int		 k_val;
@@ -1109,7 +1015,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  int
  yyerror(const char *fmt, ...)
  {
-@@ -611,37 +845,82 @@ kw_cmp(const void *k, const void *e)
+@@ -611,37 +831,80 @@ kw_cmp(const void *k, const void *e)
  	return (strcmp(k, ((const struct keywords *)e)->k_name));
  }
  
@@ -1165,7 +1071,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +		{ "listen",		LISTEN,	"multiple" },
 +		{ "log_negligible_adjfreq",		_LOG_NEGLIGIBLE_ADJFREQ,	"single" },
 +		{ "log_negligible_adjtime",		_LOG_NEGLIGIBLE_ADJTIME,	"single" },
-+		{ "max_display_width",		_MAX_DISPLAY_WIDTH,	"single" },
 +		{ "max_frequency_adjust",		_MAX_FREQUENCY_ADJUST, "single" },
 +		{ "max_send_errors",		_MAX_SEND_ERRORS,	"single" },
 +		{ "max_servers_dns",		_MAX_SERVERS_DNS,	"single" },
@@ -1181,7 +1086,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +		{ "sensor",		SENSOR,	"multiple" },
 +		{ "sensor_data_maxage",		_SENSOR_DATA_MAXAGE,	"single" },
 +		{ "sensor_default_refid",		_SENSOR_DEFAULT_REFID,	"single" },
-+		{ "sensor_offsets",		_SENSOR_OFFSETS,	"single" },
 +		{ "sensor_query_interval",		_SENSOR_QUERY_INTERVAL,	"single" },
 +		{ "sensor_scan_interval",		_SENSOR_SCAN_INTERVAL,	"single" },
 +		{ "server",		SERVER,	"multiple" },
@@ -1216,7 +1120,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  }
  
  #define MAXPUSHBACK	128
-@@ -743,8 +1022,9 @@ yylex(void)
+@@ -743,8 +1006,9 @@ yylex(void)
  {
  	u_char	 buf[8096];
  	u_char	*p;
@@ -1227,7 +1131,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  
  	p = buf;
  	while ((c = lgetc(0)) == ' ' || c == '\t')
-@@ -805,7 +1085,7 @@ yylex(void)
+@@ -805,7 +1069,7 @@ yylex(void)
  				yyerror("string is too long");
  				return (findeol());
  			}
@@ -1236,7 +1140,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  		lungetc(c);
  		if (p == buf + 1 && buf[0] == '-')
  			goto nodigits;
-@@ -816,10 +1096,23 @@ yylex(void)
+@@ -816,10 +1080,23 @@ yylex(void)
  			yylval.v.number = strtonum(buf, LLONG_MIN,
  			    LLONG_MAX, &errstr);
  			if (errstr) {
@@ -1260,7 +1164,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  			return (NUMBER);
  		} else {
  nodigits:
-@@ -847,11 +1140,47 @@ nodigits:
+@@ -847,11 +1124,47 @@ nodigits:
  		} while ((c = lgetc(0)) != EOF && (allowed_in_string(c)));
  		lungetc(c);
  		*p = '\0';
@@ -1312,7 +1216,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	if (c == '\n') {
  		yylval.lineno = file->lineno;
  		file->lineno++;
-@@ -902,12 +1231,205 @@ popfile(void)
+@@ -902,12 +1215,193 @@ popfile(void)
  	return (file ? 0 : EOF);
  }
  
@@ -1352,10 +1256,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +
 +	/* single query might take n secs max */
 +	conf->querytime_max			= QUERYTIME_MAX; // 15;
-+	/*Maximum number of allowed sensor offsets*/
-+	conf->offset_array_size			= OFFSET_ARRAY_SIZE; // 8;
-+	/*Number of sensor offset values allowed for median offset value calculation*/
-+	conf->sensor_offsets			= SENSOR_OFFSETS; // 6;
 +	/* max seconds to wait with -s */
 +	conf->settime_timeout			= SETTIME_TIMEOUT; // 100;
 +
@@ -1373,9 +1273,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +
 +	/* max send errors before reconnect */
 +	conf->max_send_errors			= MAX_SEND_ERRORS; // 3;
-+
-+	/* max chars in ctl_show report line */
-+	conf->max_display_width			= MAX_DISPLAY_WIDTH; // 80;
 +
 +	/* set after doing adjfreq */
 +	conf->filter_adjfreq			= FILTER_ADJFREQ; // 0x01;
@@ -1433,9 +1330,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +	fprintf(stdout, "Trust level (aggressive): %d\n", conf->trustlevel_aggressive);
 +	fprintf(stdout, "Trust level (maximum): %d\n",    conf->trustlevel_max);
 +	fprintf(stdout, "\n");
-+	fprintf(stdout, "Maximum number of allowed sensor offsets: %d\n", conf->offset_array_size);
-+	fprintf(stdout, "Number of sensor offset values considered for median offset value calculation: %d\n", conf->sensor_offsets);
-+	fprintf(stdout, "\n");
 +	fprintf(stdout, "Query time (maximum): %d seconds\n",              conf->querytime_max);
 +	fprintf(stdout, "Start up timeout in auto mode: %d seconds\n",     conf->settime_timeout);
 +	fprintf(stdout, "\n");
@@ -1451,8 +1345,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +	fprintf(stdout, "Maximum frequency correction per iteration: %f\n",          conf->max_frequency_adjust);
 +	fprintf(stdout, "\n");
 +	fprintf(stdout, "Maximum send errors before reconnection: %d\n", conf->max_send_errors);
-+	fprintf(stdout, "\n");
-+	fprintf(stdout, "Maximum number of characters per output line: %d\n", conf->max_display_width);
 +	fprintf(stdout, "\n");
 +
 +	if ((conf->filter_adjfreq) == 0x01)
@@ -1518,7 +1410,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	TAILQ_INIT(&conf->listen_addrs);
  	TAILQ_INIT(&conf->ntp_peers);
  	TAILQ_INIT(&conf->ntp_conf_sensors);
-@@ -922,5 +1444,18 @@ parse_config(const char *filename, struc
+@@ -922,5 +1416,18 @@ parse_config(const char *filename, struc
  	errors = file->errors;
  	popfile();
  
@@ -1538,7 +1430,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  	return (errors ? -1 : 0);
  }
 --- a/src/ntpd.conf.5	2020-08-01 01:22:25.000000000 +0300
-+++ b/src/ntpd.conf.5	2020-08-02 02:31:01.526954911 +0300
++++ b/src/ntpd.conf.5	2020-08-03 23:07:12.770476926 +0300
 @@ -14,7 +14,7 @@
  .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
  .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
@@ -1561,7 +1453,7 @@ Subject: Unhardcode majority of configuration settings, update manual
  The basic configuration options are as follows:
  .Bl -tag -width Ds
  .It Xo Ic listen on Ar address
-@@ -282,12 +284,523 @@ constraints from "https://www.google.com
+@@ -282,12 +284,505 @@ constraints from "https://www.google.com
  constraints from "https://duckduckgo.com/" port 443
  .Ed
  .El
@@ -1925,16 +1817,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +32
 +.El
 +.Ed
-+.It Ic max_display_width Ar number
-+Maximum number of characters in a
-+.Xr ntpctl 8
-+report line (peers, status, sensors and all).
-+.Bd -literal -offset indent
-+.Bl -tag -width "Default:" -compact
-+.It Default:
-+80
-+.El
-+.Ed
 +.It Ic max_frequency_adjust Ar decimal
 +Maximum allowed frequency correction per iteration.
 +.Bd -literal -offset indent
@@ -2039,14 +1921,6 @@ Subject: Unhardcode majority of configuration settings, update manual
 +"HARD"
 +.El
 +.Ed
-+.It Ic sensor_offsets Ar seconds
-+Maximum allowed sensor time offset in seconds.
-+.Bd -literal -offset indent
-+.Bl -tag -width "Default:" -compact
-+.It Default:
-+6
-+.El
-+.Ed
 +.It Ic sensor_query_interval Ar seconds
 +Sensor query interval in seconds.
 +.Bd -literal -offset indent
@@ -2085,8 +1959,8 @@ Subject: Unhardcode majority of configuration settings, update manual
  .It Pa /etc/examples/ntpd.conf
  Example configuration file.
  .El
---- a/src/client.c	2020-08-02 02:05:18.690286616 +0300
-+++ b/src/client.c	2020-08-02 02:05:30.260286629 +0300
+--- a/src/client.c	2020-08-03 23:12:14.368300303 +0300
++++ b/src/client.c	2020-08-03 23:09:41.036264088 +0300
 @@ -279,7 +279,7 @@ handle_auto(uint8_t trusted, double offs
  	}
  	/* collect some more */

@@ -1,10 +1,10 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 20:55:36 +0300
+Date: Tue, 04 Aug 2020 01:52:10 +0300
 Subject: Set 'Sensors' to lowercase in ntpctl settings
 
 
---- a/src/ntpd.c	2020-08-01 13:33:10.798104786 +0300
-+++ b/src/ntpd.c	2020-08-01 13:33:27.848104803 +0300
+--- a/src/ntpd.c	2020-08-03 23:31:10.898621932 +0300
++++ b/src/ntpd.c	2020-08-03 23:30:51.351955245 +0300
 @@ -76,7 +76,7 @@ extern u_int		 constraint_cnt;
  const char		*showopt;
  

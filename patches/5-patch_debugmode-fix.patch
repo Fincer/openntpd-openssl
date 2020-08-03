@@ -1,10 +1,10 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 20:55:36 +0300
+Date: Tue, 04 Aug 2020 01:52:13 +0300
 Subject: Fix debug mode not showing output in command line
 
 
---- a/src/ntpd.c	2020-08-01 13:33:42.000000000 +0300
-+++ b/src/ntpd.c	2020-08-01 16:07:32.660248971 +0300
+--- a/src/ntpd.c	2020-08-03 23:30:09.431955200 +0300
++++ b/src/ntpd.c	2020-08-03 23:29:45.150837701 +0300
 @@ -195,12 +195,14 @@ main(int argc, char *argv[])
  		switch (ch) {
  		case 'd':

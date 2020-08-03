@@ -1,5 +1,5 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 20:55:36 +0300
+Date: Tue, 04 Aug 2020 01:52:16 +0300
 Subject: Implement OpenSSL support, update manual, update ChangeLog
 
 
@@ -655,7 +655,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  get_string(u_int8_t *ptr, size_t len)
  {
 --- /dev/null	2020-07-26 15:23:52.401078754 +0300
-+++ b/src/constraint-openssl.c	2020-08-01 19:56:30.010263450 +0300
++++ b/src/constraint-openssl.c	2020-08-03 19:23:54.377109002 +0300
 @@ -0,0 +1,329 @@
 +/*
 + * Copyright (c) 2015 Reyk Floeter <reyk@openbsd.org>
@@ -877,7 +877,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
 +		 * or ANSI C's asctime() - the latter doesn't include
 +		 * the timezone which is required here.
 +		 */
-+		if (strptime(p, "%a, %d %h %Y %T GMT",
++		if (strptime(p, IMF_FIXDATE,
 +		    &httpsdate->tls_tm) == NULL) {
 +			log_warnx("constraint %s: unsupported date format",
 +				ia_str
@@ -1297,8 +1297,8 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  	return (p);
  }
  
---- a/src/ntpd.h	2020-08-01 17:13:17.616919800 +0300
-+++ b/src/ntpd.h	2020-08-01 20:10:59.523597700 +0300
+--- a/src/ntpd.h	2020-08-03 23:10:00.839597442 +0300
++++ b/src/ntpd.h	2020-08-03 23:25:02.978705101 +0300
 @@ -31,6 +31,8 @@
  #include <poll.h>
  #include <imsg.h>
@@ -1308,7 +1308,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  #include "ntp.h"
  #include "log.h"
  
-@@ -98,9 +100,20 @@
+@@ -98,15 +100,29 @@
  #define CONSTRAINT_SCAN_TIMEOUT		(10)
  #define CONSTRAINT_MARGIN		(2.0*60)
  
@@ -1330,7 +1330,16 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  #define PARENT_SOCK_FILENO		CONSTRAINT_PASSFD
  
  #define NTP_PROC_NAME			"ntp_main"
-@@ -268,6 +281,7 @@ struct ntpd_conf {
+ #define NTPDNS_PROC_NAME		"ntp_dns"
+ #define CONSTRAINT_PROC_NAME		"constraint"
+ 
++#define	IMF_FIXDATE	"%a, %d %h %Y %T GMT"
++#define	X509_DATE	"%Y-%m-%d %T UTC"
++
+ enum client_state {
+ 	STATE_NONE,
+ 	STATE_DNS_INPROGRESS,
+@@ -268,6 +284,7 @@ struct ntpd_conf {
  	u_int						constraint_errors;
  	u_int8_t					*ca;
  	size_t						ca_len;
@@ -1338,7 +1347,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  	int						tmpfail;
  	char						*pid_file;
  
-@@ -326,7 +340,10 @@ struct ntpd_conf {
+@@ -322,7 +339,10 @@ struct ntpd_conf {
  	int						constraint_scan_timeout;
  	double						constraint_margin;
  
@@ -1350,7 +1359,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  };
  
  struct ctl_show_status {
-@@ -470,6 +487,55 @@ void	 priv_constraint_check_child(pid_t,
+@@ -466,6 +486,55 @@ void	 priv_constraint_check_child(pid_t,
  char	*get_string(u_int8_t *, size_t);
  int	intlen(int);
  
@@ -1406,9 +1415,9 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  /* util.c */
  double			 gettime_corrected(void);
  double			 gettime_from_timeval(struct timeval *);
---- a/src/ntpd.c	2020-08-01 17:13:23.406919806 +0300
-+++ b/src/ntpd.c	2020-08-02 01:53:17.636952520 +0300
-@@ -260,6 +260,20 @@ main(int argc, char *argv[])
+--- a/src/ntpd.c	2020-08-03 23:48:03.062564686 +0300
++++ b/src/ntpd.c	2020-08-03 23:48:23.609231373 +0300
+@@ -261,6 +261,20 @@ main(int argc, char *argv[])
  	if (lconf.automatic)
  		lconf.settime = 1;
  
@@ -1429,7 +1438,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  	if (pname != NULL) {
  		/* Remove our proc arguments, so child doesn't need to. */
  		if (sanitize_argv(&argc0, &argv0) == -1)
-@@ -333,8 +347,10 @@ main(int argc, char *argv[])
+@@ -334,8 +348,10 @@ main(int argc, char *argv[])
  	 * Constraint processes are forked with certificates in memory,
  	 * then privdrop into chroot before speaking to the outside world.
  	 */
@@ -1442,8 +1451,16 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  	if (unveil("/usr/sbin/ntpd", "x") == -1)
  		err(1, "main process: can't unveil ntpd executable for execute operations");
  	if (pledge("stdio rpath inet settime proc exec id", NULL) == -1)
---- a/src/ntp.c	2020-08-01 18:38:24.803591850 +0300
-+++ b/src/ntp.c	2020-08-01 19:38:58.810262343 +0300
+@@ -746,7 +762,6 @@ ctl_main(int argc, char *argv[], const s
+ 
+ 	memset(&sa, 0, sizeof(sa));
+ 	sa.sun_family = AF_UNIX;
+-
+ 	if (strlcpy(sa.sun_path, sockname, sizeof(sa.sun_path)) >=
+ 	    sizeof(sa.sun_path))
+ 		errx(1, "ntpctl: control socket name is too long");
+--- a/src/ntp.c	2020-08-03 23:08:32.397143675 +0300
++++ b/src/ntp.c	2020-08-03 23:23:48.364816044 +0300
 @@ -166,8 +166,22 @@ ntp_main(struct ntpd_conf *nconf, struct
  	constraint_cnt = 0;
  	conf->constraint_median = 0;
@@ -1469,9 +1486,9 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  
  	TAILQ_FOREACH(p, &conf->ntp_peers, entry)
  		client_peer_init(p);
---- a/src/parse.y	2020-08-01 21:17:48.293601924 +0300
-+++ b/src/parse.y	2020-08-01 21:22:32.776935560 +0300
-@@ -148,7 +148,10 @@ typedef struct {
+--- a/src/parse.y	2020-08-03 23:11:12.796264187 +0300
++++ b/src/parse.y	2020-08-03 23:22:43.401482642 +0300
+@@ -144,7 +144,10 @@ typedef struct {
  %token	_CONSTRAINT_SCAN_TIMEOUT
  %token	_CONSTRAINT_MARGIN
  
@@ -1483,7 +1500,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  
  %token	<v.string>		STRING
  %token	<v.number>		NUMBER
-@@ -594,8 +597,35 @@ main		: LISTEN ON address listen_opts	{
+@@ -580,8 +583,35 @@ main		: LISTEN ON address listen_opts	{
  		| _CONSTRAINT_MARGIN pos_num {
  			conf->constraint_margin = (double)$2.pos_num;
  		}
@@ -1521,7 +1538,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  		}
  		;
  
-@@ -856,9 +886,12 @@ lookup(char *s)
+@@ -842,9 +872,12 @@ lookup(char *s)
  		{ "auto_replies",	_AUTO_REPLIES,	"single" },
  		{ "auto_threshold",	_AUTO_THRESHOLD,	"single" },
  		{ "constraint",		CONSTRAINT,	"multiple" },
@@ -1535,7 +1552,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  		{ "constraint_retry_interval",	_CONSTRAINT_RETRY_INTERVAL,	"single" },
  		{ "constraint_scan_interval",		_CONSTRAINT_SCAN_INTERVAL,	"single" },
  		{ "constraint_scan_timeout",		_CONSTRAINT_SCAN_TIMEOUT,	"single" },
-@@ -1319,7 +1352,10 @@ init_conf(struct ntpd_conf *conf)
+@@ -1296,7 +1329,10 @@ init_conf(struct ntpd_conf *conf)
  	conf->constraint_scan_timeout			= CONSTRAINT_SCAN_TIMEOUT; // 10;
  	conf->constraint_margin			= CONSTRAINT_MARGIN; // 2.0*60;
  
@@ -1547,7 +1564,7 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  }
  
  void
-@@ -1394,7 +1430,16 @@ print_conf(struct ntpd_conf *lconf)
+@@ -1366,7 +1402,16 @@ print_conf(struct ntpd_conf *lconf)
  	fprintf(stdout, "Constraint retry interval: %d seconds\n",   conf->constraint_retry_interval);
  	fprintf(stdout, "Constraint scan interval: %d seconds\n",            conf->constraint_scan_interval);
  	fprintf(stdout, "Constraint scan timeout: %d seconds\n",             conf->constraint_scan_timeout);
@@ -1565,8 +1582,8 @@ Subject: Implement OpenSSL support, update manual, update ChangeLog
  	fprintf(stdout, "\n");
  
  	TAILQ_FOREACH(sens, &conf->ntp_conf_sensors, entry) {
---- a/src/ntpd.conf.5	2020-08-02 02:31:01.526954911 +0300
-+++ b/src/ntpd.conf.5	2020-08-02 02:26:08.596954600 +0300
+--- a/src/ntpd.conf.5	2020-08-03 23:07:12.770476926 +0300
++++ b/src/ntpd.conf.5	2020-08-03 23:21:11.124672226 +0300
 @@ -14,7 +14,7 @@
  .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
  .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

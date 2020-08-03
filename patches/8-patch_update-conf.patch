@@ -1,11 +1,11 @@
 From: Pekka Helenius <fincer89@hotmail.com>
-Date: Sun, 02 Aug 2020 20:55:36 +0300
+Date: Tue, 04 Aug 2020 01:52:17 +0300
 Subject: Update default configuration file
 
 
 --- a/ntpd.conf	2020-07-31 23:00:50.000000000 +0300
-+++ b/ntpd.conf	2020-08-02 02:30:41.706954890 +0300
-@@ -1,11 +1,330 @@
++++ b/ntpd.conf	2020-08-03 23:19:18.951338773 +0300
+@@ -1,11 +1,321 @@
 -# $OpenBSD: ntpd.conf,v 1.16 2019/11/06 19:04:12 deraadt Exp $
 -#
  # See ntpd.conf(5) and /etc/examples/ntpd.conf
@@ -260,11 +260,6 @@ Subject: Update default configuration file
 +#
 +# log_negligible_adjtime      32
 +
-+# Maximum number of characters in a ntpctl(8)
-+# report line (peers, status, sensors and all).
-+#
-+# max_display_width           80
-+
 +# Maximum allowed frequency correction per iteration.
 +#
 +# max_frequency_adjust        0.0128
@@ -325,10 +320,6 @@ Subject: Update default configuration file
 +# Sensor default reference ID string.
 +#
 +# sensor_default_refid        "HARD"
-+
-+# Maximum allowed sensor time offset in seconds.
-+#
-+# sensor_offsets              6
 +
 +# Sensor query interval in seconds.
 +#
