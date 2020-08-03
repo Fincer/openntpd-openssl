@@ -8,6 +8,10 @@ OpenNTPD daemon with OpenSSL implementation & flexible configurability
 
 - Many previously hardcoded values are now configurable via conf file.
 
+- Implement UDP & TCP port selection for multiple options.
+
+- Implement custom user agent string support for constraints.
+
 - Improved log entries interpretation.
 
 - Updated manual.
@@ -24,6 +28,7 @@ OpenNTPD daemon with OpenSSL implementation & flexible configurability
 | [6-patch_unhardcode-conf.patch](patches/6-patch_unhardcode-conf.patch)                        | Unhardcode majority of configuration settings, update manual            |
 | [7-patch_implement-openssl.patch](patches/7-patch_implement-openssl.patch)                    | Implement OpenSSL support, update manual, update ChangeLog              |
 | [8-patch_update-conf.patch](patches/8-patch_update-conf.patch)                                | Update default configuration file                                       |
+| [9-patch_add-constraint-useragent.patch](patches/9-patch_add-constraint-useragent.patch)      | Add user agent string support for HTTPS constraints, update ChangeLog   |
 
 ## Usage
 

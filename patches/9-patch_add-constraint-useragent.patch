@@ -1,0 +1,495 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Tue, 04 Aug 2020 01:52:18 +0300
+Subject: Add user agent string support for HTTPS constraints, update ChangeLog
+
+
+--- a/src/parse.y	2020-08-03 23:22:43.401482642 +0300
++++ b/src/parse.y	2020-08-04 01:03:44.458183310 +0300
+@@ -69,6 +69,7 @@ struct opts {
+ 	int		trusted;
+ 	char		*refstr;
+ 	int		port;
++	char	*useragent;
+ 	int		pos_num;
+ 	double		pos_decimal;
+ } opts;
+@@ -91,6 +92,7 @@ typedef struct {
+ %token	SERVER SERVERS SENSOR CORRECTION RTABLE REFID STRATUM WEIGHT
+ %token	ERROR
+ %token	PORT
++%token	USERAGENT
+ 
+ %token	_NTPD_USER
+ %token	_DRIFTFILE
+@@ -164,6 +166,7 @@ typedef struct {
+ %type	<v.opts>		weight
+ %type	<v.opts>		trusted
+ %type	<v.opts>		port
++%type	<v.opts>		useragent
+ 
+ %type	<v.opts>		pos_num
+ %type	<v.opts>		pos_decimal
+@@ -376,6 +379,8 @@ main		: LISTEN ON address listen_opts	{
+ 
+ 				p->addr_head.pool = ++poolseqnum;
+ 				p->addr_head.name = strdup($3->name);
++				if ($4.useragent)
++					p->useragent = strdup($4.useragent);
+ 				p->addr_head.path = strdup($3->path);
+ 				if (p->addr_head.name == NULL ||
+ 				    p->addr_head.path == NULL)
+@@ -425,6 +430,8 @@ main		: LISTEN ON address listen_opts	{
+ 
+ 			p->addr_head.pool = 0;
+ 			p->addr_head.name = strdup($3->name);
++			if ($4.useragent)
++				p->useragent = strdup($4.useragent);
+ 			p->addr_head.path = strdup($3->path);
+ 			if (p->addr_head.name == NULL ||
+ 			    p->addr_head.path == NULL)
+@@ -735,7 +742,7 @@ constraint_opts	:	{ opts_default(); }
+ constraint_opts_l	: constraint_opts_l constraint_opt
+ 		| constraint_opt
+ 		;
+-constraint_opt	: port
++constraint_opt	: port | useragent
+ 		;
+ 
+ sensor_opts	:	{ opts_default(); }
+@@ -803,6 +810,19 @@ port		: PORT NUMBER	{
+ 		}
+ 		;
+ 
++useragent		: USERAGENT STRING {
++			size_t l = strlen($2);
++
++			if (l < 1 || l > USERAGENT_MAX_LENGTH) {
++				yyerror("user agent string length must be from 1 to %d characters",
++				USERAGENT_MAX_LENGTH);
++				free($2);
++				YYERROR;
++			}
++			opts.useragent = $2;
++		}
++		;
++
+ rtable		: RTABLE NUMBER {
+ #ifdef RT_TABLEID_MAX
+ 			if ($2 < 0 || $2 > RT_TABLEID_MAX) {
+@@ -924,6 +944,7 @@ lookup(char *s)
+ 		{ "trustlevel_badpeer",		_TRUSTLEVEL_BADPEER,	"single" },
+ 		{ "trustlevel_max",		_TRUSTLEVEL_MAX,	"single" },
+ 		{ "trustlevel_pathetic",		_TRUSTLEVEL_PATHETIC,	"single" },
++		{ "useragent",		USERAGENT,	"multiple" },
+ 		{ "weight",		WEIGHT,	"multiple" },
+ 	};
+ 	struct keywords	*p;
+--- a/src/ntpd.h	2020-08-03 23:25:02.978705101 +0300
++++ b/src/ntpd.h	2020-08-03 23:41:03.644863921 +0300
+@@ -114,6 +114,8 @@
+ #define CONSTRAINT_CA	SYSCONFDIR "/ssl/cert.pem"
+ #define CONSTRAINT_CA_VALIDATION			0x01;
+ 
++#define USERAGENT_MAX_LENGTH		256
++
+ #define PARENT_SOCK_FILENO		CONSTRAINT_PASSFD
+ 
+ #define NTP_PROC_NAME			"ntp_main"
+@@ -159,9 +161,11 @@ struct ntp_addr_wrap {
+ struct ntp_addr_msg {
+ 	struct ntp_addr		 a;
+ 	int		port;
+-	size_t			 namelen;
+-	size_t			 pathlen;
++	char		useragent[USERAGENT_MAX_LENGTH];
++	size_t			namelen;
++	size_t			pathlen;
+ 	size_t			portlen;
++	size_t			agentlen;
+ };
+ 
+ struct ntp_status {
+@@ -239,6 +243,7 @@ struct constraint {
+ 	time_t				 last;
+ 	time_t				 constraint;
+ 	int				 dnstries;
++	char			*useragent;
+ };
+ 
+ struct ntp_conf_sensor {
+@@ -495,6 +500,7 @@ struct httpsdate {
+ 	char			*tls_hostname;
+ 	char			*tls_path;
+ 	char			*tls_request;
++	char			*tls_useragent;
+ 	struct tls_config	*tls_config;
+ 	struct tls		*tls_ctx;
+ 	struct tm		 tls_tm;
+@@ -502,11 +508,11 @@ struct httpsdate {
+ 
+ struct httpsdate *
+ 	 httpsdate_init(const char *, const int *, const char *,
+-	    const char *, const u_int8_t *, size_t);
++	    const char *, const char *, const u_int8_t *, size_t);
+ void	 httpsdate_free(void *);
+ int	 httpsdate_request(struct httpsdate *, struct timeval *);
+ void	*httpsdate_query(const char *, const int *, const char *,
+-	    const char *, const u_int8_t *, size_t,
++	    const char *, const char *, const u_int8_t *, size_t,
+ 	    struct timeval *, struct timeval *);
+ 
+ char	*tls_readline(struct tls *, size_t *, size_t *, struct timeval *);
+--- a/src/constraint.c	2020-08-02 01:58:28.366952848 +0300
++++ b/src/constraint.c	2020-08-03 23:43:48.584926017 +0300
+@@ -132,7 +132,7 @@ constraint_query(struct constraint *cstr
+ {
+ 	time_t			 now;
+ 	struct ntp_addr_msg	 am;
+-	struct iovec		 iov[4];
++	struct iovec		 iov[5];
+ 	int			 iov_cnt = 0;
+ 
+ 	now = getmonotime();
+@@ -185,6 +185,18 @@ constraint_query(struct constraint *cstr
+ 	memcpy(&am.a, cstr->addr, sizeof(am.a));
+ 	memcpy(&am.port, &cstr->addr_head.port, sizeof(am.port));
+ 
++	if (cstr->useragent)
++		memcpy(&am.useragent, cstr->useragent, USERAGENT_MAX_LENGTH);
++/*
++ * FIXME For some reason, dynamically allocating user agent string size does not seem to work
++ * Investigate, why usage of dynamic memory allocated data fails.
++ * 
++	if (cstr->useragent) {
++			if ((am.useragent = calloc(1, strlen(cstr->useragent)) ) == NULL)
++				fatal("constraint id %d: can't allocate memory for user agent string", cstr->id);
++			memcpy(am.useragent, cstr->useragent, strlen(cstr->useragent));
++	}
++*/
+ 	iov[iov_cnt].iov_base = &am;
+ 	iov[iov_cnt++].iov_len = sizeof(am);
+ 	if (cstr->addr_head.name) {
+@@ -202,6 +214,11 @@ constraint_query(struct constraint *cstr
+ 		iov[iov_cnt].iov_base = &cstr->addr_head.port;
+ 		iov[iov_cnt++].iov_len = am.portlen;
+ 	}
++	if (cstr->useragent) {
++			am.agentlen = strlen(cstr->useragent) + 1;
++			iov[iov_cnt].iov_base = cstr->useragent;
++			iov[iov_cnt++].iov_len = am.agentlen;
++	}
+ 
+ 	imsg_composev(ibuf_main, IMSG_CONSTRAINT_QUERY,
+ 	    cstr->id, 0, -1, iov, iov_cnt);
+@@ -228,8 +245,9 @@ priv_constraint_msg(u_int32_t id, u_int8
+ 		log_warnx("constraint id %d: longer query expected", id);
+ 		return;
+ 	}
++
+ 	memcpy(&am, data, sizeof(am));
+-	if (len != (sizeof(am) + am.namelen + am.pathlen + am.portlen)) {
++	if (len != (sizeof(am) + am.namelen + am.pathlen + am.portlen + am.agentlen)) {
+ 		log_warnx("constraint id %d: invalid query received", id);
+ 		return;
+ 	}
+@@ -238,6 +256,7 @@ priv_constraint_msg(u_int32_t id, u_int8
+ 	if ((h = calloc(1, sizeof(*h))) == NULL)
+ 		fatal("constraint id %d: can't allocate memory for network address", id);
+ 	memcpy(h, &am.a, sizeof(*h));
++
+ 	h->next = NULL;
+ 
+ 	cstr = new_constraint();
+@@ -308,7 +327,7 @@ priv_constraint_readquery(struct constra
+ 		);
+ 
+ 	memcpy(am, imsg.data, sizeof(*am));
+-	if (mlen != (sizeof(*am) + am->namelen + am->pathlen + am->portlen))
++	if (mlen != (sizeof(*am) + am->namelen + am->pathlen + am->portlen + am->agentlen))
+ 		fatalx("constraint: invalid message length received from parent process (%s)",
+ 			   __func__
+ 			  );
+@@ -327,6 +346,8 @@ priv_constraint_readquery(struct constra
+ 	cstr->port = port;
+ 	cstr->addr_head.port = port;
+ 
++	cstr->useragent = strdup(am->useragent);
++
+ 	dptr = imsg.data;
+ 	memcpy(*data, dptr + sizeof(*am), mlen - sizeof(*am));
+ 	imsg_free(&imsg);
+@@ -464,7 +485,7 @@ priv_constraint_child(const char *pw_dir
+ 		log_debug("constraint %s: initializing HTTPS request", addr);
+ 		if ((ctx = httpsdate_query(addr,
+ 			&cstr.addr_head.port, cstr.addr_head.name, cstr.addr_head.path,
+-			conf->ca, conf->ca_len, &rectv, &xmttv)) == NULL) {
++			cstr.useragent, conf->ca, conf->ca_len, &rectv, &xmttv)) == NULL) {
+ 			log_debug("constraint %s: failed to get proper time results", addr); 
+ 			/* Abort with failure but without warning */
+ 			exit(1);
+@@ -852,6 +873,9 @@ constraint_msg_dns(u_int32_t id, u_int8_
+ 			ncstr->addr_head.name = strdup(cstr->addr_head.name);
+ 			ncstr->addr_head.path = strdup(cstr->addr_head.path);
+ 			ncstr->addr_head.port = intdup(cstr->addr_head.port);
++			
++			if (cstr->useragent)
++				ncstr->useragent = strdup(cstr->useragent);
+ 
+ 			// Unless we do this, we have value 0 in ncstr->port
+ 			ncstr->port = intdup(cstr->port);
+--- a/src/constraint-libressl.c	2020-08-01 19:50:24.130263065 +0300
++++ b/src/constraint-libressl.c	2020-08-04 00:01:30.008179382 +0300
+@@ -26,7 +26,7 @@
+ 
+ struct httpsdate *
+ httpsdate_init(const char *addr, const int *port, const char *hostname,
+-    const char *path, const u_int8_t *ca, size_t ca_len)
++    const char *path, const char *useragent, const u_int8_t *ca, size_t ca_len)
+ {
+ 	struct httpsdate	*httpsdate = NULL;
+ 	char	port_s[sizeof(port)];
+@@ -45,10 +45,23 @@ httpsdate_init(const char *addr, const i
+ 	    (httpsdate->tls_path = strdup(path)) == NULL)
+ 		goto fail;
+ 
+-	if (asprintf(&httpsdate->tls_request,
+-	    "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+-	    httpsdate->tls_path, httpsdate->tls_hostname) == -1)
+-		goto fail;
++	if (useragent)
++		httpsdate->tls_useragent = strdup(useragent);
++
++	if (httpsdate->tls_useragent) {
++		if (asprintf(&httpsdate->tls_request,
++			"HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n",
++			httpsdate->tls_path,
++			httpsdate->tls_hostname,
++			httpsdate->tls_useragent) == -1)
++			goto fail;
++	} else {
++		if (asprintf(&httpsdate->tls_request,
++			"HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
++			httpsdate->tls_path,
++			httpsdate->tls_hostname) == -1)
++			goto fail;
++	}
+ 
+ 	if ((httpsdate->tls_config = tls_config_new()) == NULL)
+ 		goto fail;
+@@ -110,6 +123,10 @@ httpsdate_request(struct httpsdate *http
+ 	if (tls_configure(httpsdate->tls_ctx, httpsdate->tls_config) == -1)
+ 		goto fail;
+ 
++	if (httpsdate->tls_useragent)
++		log_debug("constraint %s: user agent: %s", httpsdate->tls_addr,
++				  httpsdate->tls_useragent);
++
+ 	/*
+ 	 * LibreSSL expects an address string, which can also be a DNS name,
+ 	 * but we pass a pre-resolved IP address string in tls_addr so it
+@@ -222,14 +239,14 @@ httpsdate_request(struct httpsdate *http
+ 
+ void *
+ httpsdate_query(const char *addr, const int *port, const char *hostname,
+-    const char *path, const u_int8_t *ca, size_t ca_len,
++    const char *path, const char *useragent, const u_int8_t *ca, size_t ca_len,
+     struct timeval *rectv, struct timeval *xmttv)
+ {
+ 	struct httpsdate	*httpsdate;
+ 	struct timeval		 when;
+ 	time_t			 t;
+ 
+-	if ((httpsdate = httpsdate_init(addr, port, hostname, path,
++	if ((httpsdate = httpsdate_init(addr, port, hostname, path, useragent,
+ 	    ca, ca_len)) == NULL)
+ 		return (NULL);
+ 
+--- a/src/constraint-openssl.c	2020-08-03 19:23:54.377109002 +0300
++++ b/src/constraint-openssl.c	2020-08-04 00:01:16.178179367 +0300
+@@ -37,11 +37,20 @@ o_httpsdate_init(struct constraint *cstr
+ 	if ((httpsdate->cstr = cstr) == NULL)
+ 		goto fail;
+ 
+-	if (asprintf(&httpsdate->tls_request,
+-	    "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+-		httpsdate->cstr->addr_head.path,
+-		httpsdate->cstr->addr_head.name) == -1)
+-		goto fail;
++	if (httpsdate->cstr->useragent) {
++		if (asprintf(&httpsdate->tls_request,
++			"HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n",
++			httpsdate->cstr->addr_head.path,
++			httpsdate->cstr->addr_head.name,
++			httpsdate->cstr->useragent) == -1)
++			goto fail;
++	} else {
++		if (asprintf(&httpsdate->tls_request,
++			"HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
++			httpsdate->cstr->addr_head.path,
++			httpsdate->cstr->addr_head.name) == -1)
++			goto fail;
++	}
+ 
+ 	if ((httpsdate->tls_method = TLS_method()) == NULL)
+ 		goto fail;
+@@ -161,6 +170,10 @@ o_httpsdate_request(struct o_httpsdate *
+ 			goto fail;
+ 	}
+ 
++	if (httpsdate->cstr->useragent)
++		log_debug("constraint %s: user agent: %s", ia_str,
++				  httpsdate->cstr->useragent);
++
+ 	log_debug("constraint %s: establishing connection", ia_str);
+ 	ret = SSL_connect(httpsdate->tls_conn);
+ 	if (ret < 1) {
+--- a/src/ntpd.conf.5	2020-08-03 23:21:11.124672226 +0300
++++ b/src/ntpd.conf.5	2020-08-04 01:38:53.878185531 +0300
+@@ -14,7 +14,7 @@
+ .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ .\"
+-.Dd $Mdocdate: August 01 2020 $
++.Dd $Mdocdate: August 04 2020 $
+ .Dt NTPD.CONF 5
+ .Os
+ .Sh NAME
+@@ -58,14 +58,12 @@ is given as an address,
+ .Xr ntpd 8
+ will listen on all local addresses using the specified routing table.
+ .Xr ntpd 8
+-does not listen on any address by default.
+-The optional
++does not listen on any address by default. The optional
+ .Ic rtable
+ keyword will specify which routing table to listen on, if the operating system supports rdomains.
+ By default
+ .Xr ntpd 8
+-will listen using the current routing table.
+-The optional
++will listen using the current routing table. The optional
+ .Ic port
+ keyword will specify which local UDP port the NTP server process should use for inbound connections.
+ By default
+@@ -240,18 +238,29 @@ Configuring a constraint without proper
+ .Xr ntpd 8
+ to log a warning message on startup.
+ .Bl -tag -width Ds
+-.It Ic constraint from Ar url [ip...]
++.It Xo Ic constraint from Ar url
++.Op Ar ip...
+ .Op Ic port Ar port-number
++.Op Ic useragent Ar agent-string
++.Xc
+ Specify the URL, IP address or the hostname of an HTTPS server to
+ provide a constraint. The optional
+ .Ic port
+ number is an HTTPS server port to connect to. By default
+ .Xr ntpd 8
+-will connect to remote TCP port 443.
+-If the url is followed by one or more addresses the url and addresses will be
++will connect to remote TCP port 443. The optional
++.Ic useragent
++string adds a defined user agent string into a constraint HTTP 
++request. This option helps retrieving a time constraint from HTTPS
++servers which block user agentless HTTP
++requests. If the
++.Ic url
++is followed by one or more
++.Ic ip
++addresses the URL and addresses will be
+ tried until a working one is found.
+-The url path and expected certificate name is always taken from the
+-url specified.
++The URL path and expected certificate name is always taken from the
++URL specified.
+ If
+ .Ic constraint from
+ is used more than once,
+@@ -259,29 +268,34 @@ is used more than once,
+ will calculate a median constraint from all the servers specified.
+ .Bd -literal -offset indent
+ server ntp.example.org
+-constraint from www.example.com
++constraint from "www.example.com"
+ constraint from "https://9.9.9.9" "2620:fe::9"
+-constraint from www.google.com port 443
++constraint from "www.google.com" port 443 useragent "OpenNTPD time query"
+ .Ed
+-.It Ic constraints from Ar url
++.It Xo Ic constraints from Ar url
+ .Op Ic port Ar port-number
++.Op Ic useragent Ar agent-string
++.Xc
+ As with
+ .Ic constraint from ,
+ specify the URL, IP address or the hostname of an HTTPS server to
+ provide a constraint.
+ Should the hostname resolve to multiple IP addresses,
+ .Xr ntpd 8
+-will calculate a median constraint from all of them.
+-The optional
++will calculate a median constraint from all of them. The optional
+ .Ic port
+ number is an HTTPS server port to connect to. By default
+ .Xr ntpd 8
+-will connect to remote TCP port 443.
++will connect to remote TCP port 443. The optional
++.Ic useragent
++string adds a defined user agent string into a constraint HTTP
++request. This option helps retrieving a time constraint from HTTPS
++servers which block user agentless HTTP requests.
+ For example:
+ .Bd -literal -offset indent
+ servers pool.ntp.org
+ constraints from "https://www.google.com/"
+-constraints from "https://duckduckgo.com/" port 443
++constraints from "https://duckduckgo.com/" port 443 useragent "OpenNTPD time query"
+ .Ed
+ .El
+ .Sh ADVANCED KEYWORDS
+@@ -676,6 +690,16 @@ Negligible drift time to not log in mill
+ 32
+ .El
+ .Ed
++.It Ic max_display_width Ar number
++Maximum number of characters in a
++.Xr ntpctl 8
++report line (peers, status, sensors and all).
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++80
++.El
++.Ed
+ .It Ic max_frequency_adjust Ar decimal
+ Maximum allowed frequency correction per iteration.
+ .Bd -literal -offset indent
+@@ -780,6 +804,14 @@ Sensor default reference ID string.
+ "HARD"
+ .El
+ .Ed
++.It Ic sensor_offsets Ar seconds
++Maximum allowed sensor time offset in seconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++6
++.El
++.Ed
+ .It Ic sensor_query_interval Ar seconds
+ Sensor query interval in seconds.
+ .Bd -literal -offset indent
+--- a/ChangeLog	2020-08-02 14:01:47.093664999 +0300
++++ b/ChangeLog	2020-08-04 01:52:06.054853035 +0300
+@@ -32,6 +32,10 @@ OpenNTPD Portable Release Notes:
+ 
+ 	* Many previously hardcoded values are now configurable via conf file.
+ 
++	* Implement UDP & TCP port selection for multiple options.
++
++	* Implement custom user agent string support for constraints.
++
+ 	* Implemented OpenSSL support. Either LibreSSL or OpenSSL can be used.
+ 
+ 	* Improved log entries interpretation.
