@@ -2,6 +2,8 @@
 
 OpenNTPD daemon with OpenSSL implementation & flexible configurability
 
+See also [my blog post on fjordtek.com](https://fjordtek.com/categories/news/2020/openntpd-now-with-openssl-support/).
+
 ## Added features
 
 - Implemented OpenSSL support. Either LibreSSL or OpenSSL can be used.
