@@ -1,0 +1,23 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Thu, 13 Aug 2020 21:55:20 +0300
+Subject: Cast constraint median time value to unsigned long. Fixes overflow on 32-bit systems.
+
+
+--- a/src/constraint.c	2020-08-03 23:43:48.584926017 +0300
++++ b/src/constraint.c	2020-08-13 21:54:44.579053808 +0300
+@@ -941,7 +941,14 @@ constraint_update(void)
+ 	/* calculate median */
+ 	i = cnt / 2;
+ 	if (cnt % 2 == 0)
+-		conf->constraint_median = (values[i - 1] + values[i]) / 2;
++
++		/*
++		 * Casting to unsigned long (ul) is required on 32-bit systems.
++		 * Otherwise, the summed value exceed the maximum 32-bit time_t value and overflows
++		 * before divide operation, resulting to a great negative value which again leads to
++		 * an invalid constraint_median value.
++		 */
++		conf->constraint_median = ( (unsigned long)(values[i - 1] + values[i]) ) / 2;
+ 	else
+ 		conf->constraint_median = values[i];
+ 

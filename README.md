@@ -20,17 +20,19 @@ See also [my blog post on fjordtek.com](https://fjordtek.com/categories/news/202
 
 ## Files
 
-|                                              File                                             |                               Description                               |
-|-----------------------------------------------------------------------------------------------|-------------------------------------------------------------------------|
-| [1-patch_better-logs.patch](patches/1-patch_better-logs.patch)                                | Provide human-readable error messages for easier process interpretation |
-| [2-patch_ntpctl-sensors-tolowercase.patch](patches/2-patch_ntpctl-sensors-tolowercase.patch)  | Set 'Sensors' to lowercase in `ntpctl` settings                         |
-| [3-patch_unhardcode-ports.patch](patches/3-patch_unhardcode-ports.patch)                      | Unhardcode NTP server, client and constraint UDP & TCP port numbers     |
-| [4-patch_peercount-init.patch](patches/4-patch_peercount-init.patch)                          | Fix C compiler warning about uninitialized variable peercount           |
-| [5-patch_debugmode-fix.patch](patches/5-patch_debugmode-fix.patch)                            | Fix debug mode not showing output in command line                       |
-| [6-patch_unhardcode-conf.patch](patches/6-patch_unhardcode-conf.patch)                        | Unhardcode majority of configuration settings, update manual            |
-| [7-patch_implement-openssl.patch](patches/7-patch_implement-openssl.patch)                    | Implement OpenSSL support, update manual, update ChangeLog              |
-| [8-patch_update-conf.patch](patches/8-patch_update-conf.patch)                                | Update default configuration file                                       |
-| [9-patch_add-constraint-useragent.patch](patches/9-patch_add-constraint-useragent.patch)      | Add user agent string support for HTTPS constraints, update ChangeLog   |
+|                                                      File                                                      |                               Description                                       |
+|----------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
+| [1-patch_better-logs.patch](patches/1-patch_better-logs.patch)                                                 | Provide human-readable error messages for easier process interpretation         |
+| [2-patch_ntpctl-sensors-tolowercase.patch](patches/2-patch_ntpctl-sensors-tolowercase.patch)                   | Set 'Sensors' to lowercase in `ntpctl` settings                                 |
+| [3-patch_unhardcode-ports.patch](patches/3-patch_unhardcode-ports.patch)                                       | Unhardcode NTP server, client and constraint UDP & TCP port numbers             |
+| [4-patch_peercount-init.patch](patches/4-patch_peercount-init.patch)                                           | Fix C compiler warning about uninitialized variable peercount                   |
+| [5-patch_debugmode-fix.patch](patches/5-patch_debugmode-fix.patch)                                             | Fix debug mode not showing output in command line                               |
+| [6-patch_unhardcode-conf.patch](patches/6-patch_unhardcode-conf.patch)                                         | Unhardcode majority of configuration settings, update manual                    |
+| [7-patch_implement-openssl.patch](patches/7-patch_implement-openssl.patch)                                     | Implement OpenSSL support, update manual, update ChangeLog                      |
+| [8-patch_update-conf.patch](patches/8-patch_update-conf.patch)                                                 | Update default configuration file                                               |
+| [9-patch_add-constraint-useragent.patch](patches/9-patch_add-constraint-useragent.patch)                       | Add user agent string support for HTTPS constraints, update ChangeLog           |
+| [10-patch_peer-constraint-logs.patch](patches/10-patch_peer-constraint-logs.patch)                             | Improve constraint & NTP peer log entries; update conf & man                    |
+| [11-patch_fix-constraint-time-overflow-32bit.patch](patches/11-patch_fix-constraint-time-overflow-32bit.patch) | Cast constraint median time value to unsigned long. Fixes overflow on 32-bit systems. |
 
 ## Usage
 

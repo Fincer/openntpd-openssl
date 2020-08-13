@@ -1,0 +1,396 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Thu, 13 Aug 2020 18:29:24 +0300
+Subject: Improve constraint & NTP peer log entries; update conf & man
+
+
+--- a/src/client.c	2020-08-05 15:32:27.511659074 +0300
++++ b/src/client.c	2020-08-05 16:40:21.478329708 +0300
+@@ -377,7 +377,7 @@ client_dispatch(struct ntp_peer *p, u_in
+ 		}
+ 		interval = error_interval();
+ 		set_next(p, interval);
+-		log_info("NTP client: reply from %-16s is not synced (%s), next query in %llds",
++		log_info("NTP client: reply from NTP peer %-16s is not synced (%s), next query in %llds",
+ 		    log_sockaddr((struct sockaddr *)&p->addr->ss), s,
+ 			(long long)interval);
+ 		return (0);
+@@ -405,9 +405,13 @@ client_dispatch(struct ntp_peer *p, u_in
+ 	/* Detect liars */
+ 	if (!p->trusted && conf->constraint_median != 0 &&
+ 	    (constraint_check(T2) != 0 || constraint_check(T3) != 0)) {
+-		log_info("NTP client: reply from %-16s constraint check failed",
+-		    log_sockaddr((struct sockaddr *)&p->addr->ss));
+-		set_next(p, error_interval());
++		interval = error_interval();
++		log_info("NTP client: reply from NTP peer %-16s constraint check failed, "
++				 "next query in %llds",
++					log_sockaddr((struct sockaddr *)&p->addr->ss),
++					(long long)interval
++				);
++		set_next(p, interval);
+ 		return (0);
+ 	}
+ 
+@@ -417,10 +421,12 @@ client_dispatch(struct ntp_peer *p, u_in
+ 	if (p->reply[p->shift].delay < 0) {
+ 		interval = error_interval();
+ 		set_next(p, interval);
+-		log_info("NTP client: reply from %-16s has negative delay %9fs, "
++		log_info("NTP client: reply from NTP peer %-16s has negative delay %9fs, "
+ 		    "next query in %llds",
+-		    log_sockaddr((struct sockaddr *)&p->addr->ss),
+-		    p->reply[p->shift].delay, (long long)interval);
++			log_sockaddr((struct sockaddr *)&p->addr->ss),
++			p->reply[p->shift].delay,
++			(long long)interval
++		);
+ 		return (0);
+ 	}
+ 	p->reply[p->shift].error = (T2 - T1) - (T3 - T4);
+@@ -472,7 +478,7 @@ client_dispatch(struct ntp_peer *p, u_in
+ 		p->trustlevel++;
+ 	}
+ 
+-	log_debug("NTP client: reply from %-16s offset: %9fs, delay: %9fs, "
++	log_debug("NTP client: reply from NTP peer %-16s offset: %9fs, delay: %9fs, "
+ 	    "next query in %llds",
+ 	    log_sockaddr((struct sockaddr *)&p->addr->ss),
+ 	    p->reply[p->shift].offset, p->reply[p->shift].delay,
+--- a/src/constraint-libressl.c	2020-08-04 00:01:30.008179382 +0300
++++ b/src/constraint-libressl.c	2020-08-05 15:56:10.558327257 +0300
+@@ -42,7 +42,8 @@ httpsdate_init(const char *addr, const i
+ 	if ((httpsdate->tls_addr = strdup(addr)) == NULL ||
+ 	    (httpsdate->tls_port = strdup(port_s)) == NULL ||
+ 	    (httpsdate->tls_hostname = strdup(hostname)) == NULL ||
+-	    (httpsdate->tls_path = strdup(path)) == NULL)
++	    (httpsdate->tls_path = strdup(path)) == NULL
++	)
+ 		goto fail;
+ 
+ 	if (useragent)
+@@ -53,13 +54,15 @@ httpsdate_init(const char *addr, const i
+ 			"HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n",
+ 			httpsdate->tls_path,
+ 			httpsdate->tls_hostname,
+-			httpsdate->tls_useragent) == -1)
++			httpsdate->tls_useragent
++		) == -1)
+ 			goto fail;
+ 	} else {
+ 		if (asprintf(&httpsdate->tls_request,
+ 			"HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+ 			httpsdate->tls_path,
+-			httpsdate->tls_hostname) == -1)
++			httpsdate->tls_hostname
++		) == -1)
+ 			goto fail;
+ 	}
+ 
+@@ -67,10 +70,16 @@ httpsdate_init(const char *addr, const i
+ 		goto fail;
+ 
+ 	if (ca == NULL || ca_len == 0 || conf->constraint_ca_validation == 0) {
+-		log_debug("constraint %s: certificate can't be verified", addr);
++		log_debug("constraint %s (%s): certificate can't be verified",
++					addr,
++					httpsdate->tls_hostname
++				);
+ 		tls_config_insecure_noverifycert(httpsdate->tls_config);
+ 	} else {
+-		log_debug("constraint %s: verifying certificate", addr);
++		log_debug("constraint %s (%s): verifying certificate",
++					addr,
++					httpsdate->tls_hostname
++				);
+ 		if (tls_config_set_ca_mem(httpsdate->tls_config, ca, ca_len) == -1)
+ 			goto fail;
+ 	}
+@@ -124,8 +133,11 @@ httpsdate_request(struct httpsdate *http
+ 		goto fail;
+ 
+ 	if (httpsdate->tls_useragent)
+-		log_debug("constraint %s: user agent: %s", httpsdate->tls_addr,
+-				  httpsdate->tls_useragent);
++		log_debug("constraint %s (%s): user agent: %s",
++					httpsdate->tls_addr,
++					httpsdate->tls_hostname,
++					httpsdate->tls_useragent
++				);
+ 
+ 	/*
+ 	 * LibreSSL expects an address string, which can also be a DNS name,
+@@ -133,13 +145,16 @@ httpsdate_request(struct httpsdate *http
+ 	 * does not trigger any DNS operation and is safe to be called
+ 	 * without the dns pledge.
+ 	 */
+-	log_debug("constraint %s: establishing connection", httpsdate->tls_addr);
++	log_debug("constraint %s (%s): establishing connection",
++				httpsdate->tls_addr,
++				httpsdate->tls_hostname
++			);
+ 	if (tls_connect_servername(httpsdate->tls_ctx, httpsdate->tls_addr,
+ 	    httpsdate->tls_port, httpsdate->tls_hostname) == -1) {
+-		log_debug("constraint %s: TLS connection failed (%s): %s",
+-		    httpsdate->tls_addr,
++		log_debug("constraint %s (%s): TLS connection failed: %s",
++			httpsdate->tls_addr,
+ 			httpsdate->tls_hostname,
+-		    tls_error(httpsdate->tls_ctx)
++			tls_error(httpsdate->tls_ctx)
+ 		);
+ 		goto fail;
+ 	}
+@@ -151,7 +166,7 @@ httpsdate_request(struct httpsdate *http
+ 		if (ret == TLS_WANT_POLLIN || ret == TLS_WANT_POLLOUT)
+ 			continue;
+ 		if (ret == -1) {
+-			log_warnx("constraint %s: TLS write operation failed (%s): %s",
++			log_warnx("constraint %s (%s): TLS write operation failed: %s",
+ 				httpsdate->tls_addr,
+ 				httpsdate->tls_hostname,
+ 				tls_error(httpsdate->tls_ctx)
+@@ -180,9 +195,10 @@ httpsdate_request(struct httpsdate *http
+ 		 * the timezone which is required here.
+ 		 */
+ 		if (strptime(p, IMF_FIXDATE,
+-		    &httpsdate->tls_tm) == NULL) {
+-			log_warnx("constraint %s: unsupported date format",
+-				httpsdate->tls_addr
++			&httpsdate->tls_tm) == NULL) {
++			log_warnx("constraint %s (%s): unsupported date format",
++				httpsdate->tls_addr,
++				httpsdate->tls_hostname
+ 			);
+ 			free(line);
+ 			return (-1);
+@@ -209,11 +225,15 @@ httpsdate_request(struct httpsdate *http
+ 		if (strftime(timebuf1, sizeof(timebuf1), X509_DATE, tm) == 0)
+ 			goto fail;
+ 		if (strftime(timebuf2, sizeof(timebuf2), X509_DATE,
+-		    &httpsdate->tls_tm) == 0)
++			&httpsdate->tls_tm) == 0)
+ 			goto fail;
+-		log_warnx("constraint %s: TLS certificate not yet valid (%s): "
+-		    "not before %s, now is %s", httpsdate->tls_addr,
+-		    httpsdate->tls_hostname, timebuf1, timebuf2);
++		log_warnx("constraint %s (%s): TLS certificate not yet valid: "
++			"not before %s, current time is %s",
++			httpsdate->tls_addr,
++			httpsdate->tls_hostname,
++			timebuf1,
++			timebuf2
++		);
+ 		goto fail;
+ 	}
+ 	if (httptime >= notafter) {
+@@ -222,11 +242,15 @@ httpsdate_request(struct httpsdate *http
+ 		if (strftime(timebuf1, sizeof(timebuf1), X509_DATE, tm) == 0)
+ 			goto fail;
+ 		if (strftime(timebuf2, sizeof(timebuf2), X509_DATE,
+-		    &httpsdate->tls_tm) == 0)
++			&httpsdate->tls_tm) == 0)
+ 			goto fail;
+-		log_warnx("constraint %s: TLS certificate has been expired (%s): "
+-		    "not after %s, now is %s", httpsdate->tls_addr,
+-		    httpsdate->tls_hostname, timebuf1, timebuf2);
++		log_warnx("constraint %s (%s): TLS certificate has been expired: "
++			"not after %s, current time is %s",
++			httpsdate->tls_addr,
++			httpsdate->tls_hostname,
++			timebuf1,
++			timebuf2
++		);
+ 		goto fail;
+ 	}
+ 
+--- a/src/constraint-openssl.c	2020-08-04 00:01:16.178179367 +0300
++++ b/src/constraint-openssl.c	2020-08-05 16:33:55.571662669 +0300
+@@ -122,16 +122,23 @@ o_httpsdate_request(struct o_httpsdate *
+ 			inet_ntop(AF_INET, &sa_in.sin_addr, ia_str, sizeof(ia_str));
+ 
+ 			if ((sslfd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP)) == -1)
+-				log_warnx("constraint %s: can't create OpenSSL socket (4)", ia_str);
++				log_warnx("constraint %s (%s): can't create OpenSSL socket (4)",
++						ia_str,
++						httpsdate->cstr->addr_head.name
++						 );
+ 
+ 			SSL_set_fd(httpsdate->tls_conn, sslfd);
+ 
+-			log_debug("constraint %s: initializing HTTPS request", ia_str);
++			log_debug("constraint %s (%s): initializing HTTPS request",
++					ia_str,
++					httpsdate->cstr->addr_head.name
++ 					);
+ 			ret = connect(sslfd, (struct sockaddr *)&sa_in, sizeof(sa_in));
+ 			if (ret < 0) {
+-				log_warnx("constraint %s: TLS connection failed, socket error: %d",
+-						 ia_str,
+-						 errno
++				log_warnx("constraint %s (%s): TLS connection failed, socket error: %d",
++						ia_str,
++						httpsdate->cstr->addr_head.name,
++						errno
+ 						);
+ 				goto fail;
+ 			}
+@@ -145,18 +152,23 @@ o_httpsdate_request(struct o_httpsdate *
+ 			inet_ntop(AF_INET6, &sa_in6->sin6_addr, ia_str, sizeof(ia_str));
+ 
+ 			if ((sslfd = socket(AF_INET6, SOCK_STREAM, 0)) == -1)
+-				log_warnx("constraint %s: can't create OpenSSL socket (6)",
+-					ia_str
++				log_warnx("constraint %s (%s): can't create OpenSSL socket (6)",
++					ia_str,
++					httpsdate->cstr->addr_head.name
+ 				);
+ 
+ 			SSL_set_fd(httpsdate->tls_conn, sslfd);
+ 
+-			log_debug("constraint %s: initializing HTTPS request", ia_str);
++			log_debug("constraint %s (%s): initializing HTTPS request",
++					ia_str,
++					httpsdate->cstr->addr_head.name
++ 					);
+ 			ret = connect(sslfd, (struct sockaddr *)&sa_in6, sizeof(sa_in6));
+ 			if (ret < 0) {
+-				log_warnx("constraint %s: TLS connection failed, socket error: %d",
+-						 ia_str,
+-						 errno
++				log_warnx("constraint %s (%s): TLS connection failed, socket error: %d",
++						ia_str,
++						httpsdate->cstr->addr_head.name,
++						errno
+ 						);
+ 				goto fail;
+ 			}
+@@ -164,20 +176,26 @@ o_httpsdate_request(struct o_httpsdate *
+ 			break;
+ 
+ 		default:
+-			fatalx("constraint %s: invalid network address family in HTTPS request",
+-				ia_str
++			fatalx("constraint %s (%s): invalid network address family in HTTPS request",
++				ia_str,
++				httpsdate->cstr->addr_head.name
+ 			);
+ 			goto fail;
+ 	}
+ 
+ 	if (httpsdate->cstr->useragent)
+-		log_debug("constraint %s: user agent: %s", ia_str,
+-				  httpsdate->cstr->useragent);
++		log_debug("constraint %s (%s): user agent: %s",
++				ia_str,
++				httpsdate->cstr->addr_head.name,
++				httpsdate->cstr->useragent);
+ 
+-	log_debug("constraint %s: establishing connection", ia_str);
++	log_debug("constraint %s (%s): establishing connection",
++			ia_str,
++			httpsdate->cstr->addr_head.name
++ 			);
+ 	ret = SSL_connect(httpsdate->tls_conn);
+ 	if (ret < 1) {
+-		log_warnx("constraint %s: TLS connection failed in accept (%s)",
++		log_warnx("constraint %s (%s): TLS connection failed in accept",
+ 			ia_str,
+ 			httpsdate->cstr->addr_head.name
+ 		);
+@@ -185,7 +203,10 @@ o_httpsdate_request(struct o_httpsdate *
+ 		goto fail;
+ 	}
+ 	if (ret == 5) {
+-		log_warnx("constraint %s: socket error no: %d", ia_str, ret);
++		log_warnx("constraint %s (%s): socket error no: %d",
++				ia_str,
++				httpsdate->cstr->addr_head.name,
++				ret);
+ 		goto fail;
+ 	}
+ 
+@@ -197,7 +218,7 @@ o_httpsdate_request(struct o_httpsdate *
+ 		if (ret == SSL_ERROR_WANT_WRITE || ret == SSL_ERROR_WANT_READ)
+ 			continue;
+ 	if (ret < 1) {
+-		log_warnx("constraint %s: TLS write operation failed: (%s)",
++		log_warnx("constraint %s (%s): TLS write operation failed",
+ 			ia_str,
+ 			httpsdate->cstr->addr_head.name
+ 		);
+@@ -205,7 +226,10 @@ o_httpsdate_request(struct o_httpsdate *
+ 		goto fail;
+ 	}
+ 	if (ret == 6) {
+-		log_warnx("constraint %s: HTTPS server aborted the request", ia_str);
++		log_warnx("constraint %s (%s): HTTPS server aborted the request",
++			ia_str,
++			httpsdate->cstr->addr_head.name
++ 				);
+ 		openssl_lasterr();
+ 		SSL_shutdown(httpsdate->tls_conn);
+ 	}
+@@ -233,8 +257,9 @@ o_httpsdate_request(struct o_httpsdate *
+ 		 */
+ 		if (strptime(p, IMF_FIXDATE,
+ 		    &httpsdate->tls_tm) == NULL) {
+-			log_warnx("constraint %s: unsupported date format",
+-				ia_str
++			log_warnx("constraint %s (%s): unsupported date format",
++				ia_str,
++				httpsdate->cstr->addr_head.name
+ 			);
+ 			free(line);
+ 			return (-1);
+--- a/src/constraint.c	2020-08-03 23:43:48.584926017 +0300
++++ b/src/constraint.c	2020-08-13 18:29:05.369040808 +0300
+@@ -767,9 +767,10 @@ constraint_msg_result(u_int32_t id, u_in
+ 	offset = gettime_from_timeval(&tv[0]) -
+ 	    gettime_from_timeval(&tv[1]);
+ 
+-	log_info("constraint %s: reply received: offset %fs",
+-	    log_sockaddr((struct sockaddr *)&cstr->addr->ss),
+-	    offset);
++	log_info("constraint %s (%s): reply received: offset %fs",
++		log_sockaddr((struct sockaddr *)&cstr->addr->ss),
++		cstr->addr_head.name,
++		offset);
+ 
+ 	cstr->state = STATE_REPLY_RECEIVED;
+ 	cstr->last = getmonotime();
+--- a/ntpd.conf	2020-08-02 02:30:41.000000000 +0300
++++ b/ntpd.conf	2020-08-05 16:01:50.858327562 +0300
+@@ -115,11 +115,11 @@ constraints from "https://www.duckduckgo
+ 
+ # ntpd(8) socket file path.
+ #
+-# ctlsocket                   /var/run/ntpd.sock
++# ctlsocket                   "/var/run/ntpd.sock"
+ 
+ # ntpd(8) drift file path.
+ #
+-# driftfile                   /var/db/ntpd.drift
++# driftfile                   "/var/db/ntpd.drift"
+ 
+ # Whether to reset frequency filters after
+ # frequency adjustment.
+--- a/src/ntpd.conf.5	2020-08-04 01:38:53.878185531 +0300
++++ b/src/ntpd.conf.5	2020-08-05 16:02:55.751660907 +0300
+@@ -463,7 +463,7 @@ socket file path.
+ .Bd -literal -offset indent
+ .Bl -tag -width "Default:" -compact
+ .It Default:
+-/var/run/ntpd.sock
++"/var/run/ntpd.sock"
+ .El
+ .Ed
+ .It Ic driftfile Ar path-to-file
+@@ -472,7 +472,7 @@ drift file path.
+ .Bd -literal -offset indent
+ .Bl -tag -width "Default:" -compact
+ .It Default:
+-/var/db/ntpd.drift
++"/var/db/ntpd.drift"
+ .El
+ .Ed
+ .It Ic filter_adjfreq Ar true | false
