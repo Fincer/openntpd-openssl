@@ -23,13 +23,16 @@ optdepends=(
 )
 conflicts=('ntp')
 backup=('etc/ntpd.conf')
+
 source=(
     # For patch compatibility reasons. Feature freeze alike.
     ${_pkgname}::git+https://github.com/openntpd-portable/openntpd-portable.git#commit=cc3292981b83f7d691e96dc5e5a5d30af6f98454
 
     openntpd.sysusers
     openntpd.service
+)
 
+patches=(
     1-patch_better-logs.patch
     2-patch_ntpctl-sensors-tolowercase.patch
     3-patch_unhardcode-ports.patch
@@ -39,20 +42,26 @@ source=(
     7-patch_implement-openssl.patch
     8-patch_update-conf.patch
     9-patch_add-constraint-useragent.patch
-
+    10-patch-peer-constraint-logs.patch
+    11-patch-fix-constraint-time-overflow-32bit.patch
 )
+
+source=(${source[@]} ${patches[@]})
+
 sha512sums=('SKIP'
             'b6bb4f39eb435ce6c3314ea4a31430a1f8b70898d17d1fe07fa487bec0e79c022b004d3c11366f0f994546f454e5418caf5b3d7e6e1a205598d2bc8140417f7a'
             'c58d48de67cd1ce0df7ea60def26db38b9d7409b64d097639a4cde3f4774a4bcc1159f993f37c5c61781cab1e2d1b8a35005030b28b0c9f0f6e0f81053586dfa'
-            '51a4f3d4ea39019f3b64aa187060c5d19e838245f5880d27cadf98794198e45222b1aaa51d54de959fa264a25c5a1129c366837ead4c1de884d5a85308a96e8e'
-            'fdbdaf6becdc592fcb086dfa2b8d79b05c05d5791893808c31751053f12da16df0336cd3d30829dfc91c81f9c1d89416115865a0298f4b002a0b2ae1f11f2e0d'
-            '82724d80c1f110eea2dc807dc5af7b2329cfc5a4656d2cc8752979ee23d70677fe3c039cb7bc327a43a4a6cd8d4c55ac47ba38c38e8090b71c2e6348403d736b'
-            '88583f50bca84b5b35aae4055e1cf77b3dc022693f96bdb12aab8edd4066615e14fcfb2f1e861d46b63d26a3e4440459807a8f4ff8eadc1c151362b29373bd43'
-            '410f70d31b30bb9b8bef4de928bcf26d45408bfd6f5a8c1634c8d1c6b742bf2e0be1df50ee7abcc6f1167a5c6ad4df560509258ced0b7b89806fc64e0517da92'
-            '9e28d7c7ac9fbd6bf1e563751155eb0b66594d26cf432d6800958b3d624e8814d41285b3f882aa208850f166b467e1c6b3eb36dfa60b12c2a4ff74d850fab159'
-            '6ff5ad0cb34cd70dd866bfb9ef63e5b4ef6d2ac45b073fc5dbc29bb03be5f0d7ebf76e9603f1d5825fd0b53ce6e7f83963dbf5afcea337e0074abcae83784ffb'
-            'e162c1bd321d68a3a42fca82d2b0ad0c6031293d4d47d4bc69bbaa9825774c4a02b6f7c0ecc3688f8029b93df08af24c34128cc4bc15eccd6ddd344a94877056'
-            '26a2aadc40472d854b8ad1c454c5689c0703ace7836498dbf3f52664610820e2747e22307929446354a973b79dea236c73196ab30deeaa8ffdfde4286e10d3c9')
+            '3d94330459528f2209e3a203e632b774def35b2518674ef858ba0680a03aadfe1c647b474f7f27eb57056ac25f9c79727614b23a8961102622d4b0f4fbafae5d'
+            '1a7737f1ea2741c58950e7b4da0267ce608163367d7d9092254290340791d2ba3a94c686f3c6d0b2288e16b619efbafb56cccea003a96f6df11b8d75e69c2ce7'
+            'ceb83ddf153834d2be8eda247751f5dab565009b3b484b21c5c1b0d0172930bf8a3a719d488faa638dee1c86691eacf4660faefdc1443df073bd3eef1d6255ab'
+            '55306ef131d372a055563716cc005d97c7081ad92bcd46c807882fad535cc4434f30efcfedbeb0f59aeb021992c9c634e920109e18a59c556630bbac49c92e65'
+            '4d44b53d1edfb207e72ca3bcd3206565742511f9ba85f5aede781d5e21ae297dba45a0ba64d7c379c619e2e3f1ee892f74e24f33551b2e718194d8ce6aca889d'
+            '8866b2abec092148c604c7cf0e972a39c72ae26dd7376ea120423468430246d257656f9de50cebd7b73ea895719392d4a41acff53dd8538e87ad87423ee001a3'
+            '4e2dd7367235ae9ba29a953b2a031cffa9a42e7edcd82ae63bc2a1215dc30bcfd2c8c53b15f548de27291a233325d086e5b84100e1a6c3fab029dbbda6051904'
+            '4fc3834ed3ce60ab151c278c34e055f00bd7b981359bf17380b33a7b47d806b23d239a2200a883f0b8cb2fe6392dbb4d117df758ad9ebb5958af3fe91d5d61c2'
+            'cd7066b68b28fa52c90f9dd5030c78c2783c44e0c863470c1a5d2e25b27b46c3c79aff966c0a38f2dc15af2275f0e7ff5774e88e0b9025cb17b34eb5dd5160de'
+            '3ae3501a41ee50519b19074bf9e532718e365e6b45a9af4a9fba81d4276df98244cd5aac7acc9f6cd7d7a2bf460b4714e79e2676f826859fe4ad43b67046c709'
+            '4c2839f337a74afa5051391e038c7801c6560714072839713b870868609f7823beb1de2253a569b6d58872fd03bbb096f47a38472b1e6a13e965f5976270ac08')
 validpgpkeys=('A1EB079B8D3EB92B4EBD3139663AF51BD5E4D8D5') # Brent Cook <bcook@openbsd.org>
 
 pkgver() {
@@ -73,8 +82,9 @@ prepare() {
     sed -r -i 's/openntpd-portable(\/openntpd-openbsd.git)/Fincer\1/' ./update.sh
     ./update.sh
 
-    for p in ../*.patch; do
-      patch -Np1 -i ${p}
+	# Keep patch order!
+    for p in ${patches[@]}; do
+      patch -Np1 -i ../${p}
     done
 
     autoreconf -fiv
