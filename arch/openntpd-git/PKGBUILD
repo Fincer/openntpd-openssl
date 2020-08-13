@@ -16,7 +16,7 @@ license=('BSD')
 provides=('openntpd')
 conflicts=('openntpd')
 replaces=('openntpd')
-makedepends=('openssl') # 'libressl'
+makedepends=('bison' 'make' 'autoconf' 'openssl') # 'libressl'
 optdepends=(
 	'openssl: HTTPS constraint support'
 	# 'libressl: HTTPS constraint support'
