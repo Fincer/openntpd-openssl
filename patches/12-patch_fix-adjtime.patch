@@ -1,0 +1,121 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Wed, 20 Jan 2021 23:20:31 +0300
+Subject: Assume system clock is synced when time offset is in specific range limits (quick hotfix).
+
+
+--- a/src/ntpd.c	2020-08-03 23:48:23.609231373 +0300
++++ b/src/ntpd.c	2021-01-20 23:00:53.946365898 +0200
+@@ -566,9 +566,12 @@ ntpd_adjtime(double d)
+ 			log_warn("main process: time adjustment failed due to time error");
+ 	} else if (rc < 0) {
+ 		log_warn("main process: time adjustment failed");
+-	} else if (!firstadj && tx.offset == offset) {
++    }
++	if (tx.offset > -(conf->synced_offset) || tx.offset < conf->synced_offset) {
+ 		synced = 1;
+-	}
++	} else {
++        synced = 0;
++    }
+ #else
+ 	struct timeval	tv, olddelta;
+ 	d_to_tv(d, &tv);
+--- a/src/ntpd.h	2020-08-03 23:25:02.978705101 +0300
++++ b/src/ntpd.h	2021-01-20 23:09:58.945735647 +0200
+@@ -76,6 +76,7 @@
+ #define	SETTIME_TIMEOUT		100	/* max seconds to wait when settime == 1 */
+ #define	LOG_NEGLIGIBLE_ADJTIME	32	/* negligible drift to not log (ms) */
+ #define	LOG_NEGLIGIBLE_ADJFREQ	0.05	/* negligible rate to not log (ppm) */
++#define	SYNCED_OFFSET	100	/* Synced time offset (μs) */
+ #define	FREQUENCY_SAMPLES	8	/* samples for est. of permanent drift */
+ #define	MAX_FREQUENCY_ADJUST	128e-5	/* max correction per iteration */
+ #define MAX_SEND_ERRORS		3	/* max send errors before reconnect */
+@@ -313,6 +314,7 @@ struct ntpd_conf {
+ 	int						settime_timeout;
+ 
+ 	int						log_negligible_adjtime;
++	int						synced_offset;
+ 	double						log_negligible_adjfreq;
+ 
+ 	int						frequency_samples;
+--- a/src/parse.y	2020-08-03 23:22:43.401482642 +0300
++++ b/src/parse.y	2021-01-20 23:08:20.789182596 +0200
+@@ -119,6 +119,8 @@ typedef struct {
+ %token	_LOG_NEGLIGIBLE_ADJTIME
+ %token	_LOG_NEGLIGIBLE_ADJFREQ
+ 
++%token	_SYNCED_OFFSET
++
+ %token	_FREQUENCY_SAMPLES
+ %token	_MAX_FREQUENCY_ADJUST
+ 
+@@ -515,6 +517,10 @@ main		: LISTEN ON address listen_opts	{
+ 			conf->log_negligible_adjfreq = $2.pos_decimal;
+ 		}
+ 
++		| _SYNCED_OFFSET pos_num {
++			conf->synced_offset = $2.pos_num;
++		}
++
+ 		| _FREQUENCY_SAMPLES pos_num {
+ 			conf->frequency_samples = $2.pos_num;
+ 		}
+@@ -918,6 +924,7 @@ lookup(char *s)
+ 		{ "servers",		SERVERS,	"multiple" },
+ 		{ "settime_timeout",		_SETTIME_TIMEOUT,	"single" },
+ 		{ "stratum",		STRATUM,	"multiple" },
++		{ "synced_offset",		_SYNCED_OFFSET,	"single" },
+ 		{ "tries_auto_dnsfail",	_TRIES_AUTO_DNSFAIL,	"single" },
+ 		{ "trusted",		TRUSTED,	"multiple" },
+ 		{ "trustlevel_aggressive",		_TRUSTLEVEL_AGGRESSIVE,	"single" },
+@@ -1293,6 +1300,9 @@ init_conf(struct ntpd_conf *conf)
+ 	/* negligible rate to not log (ppm) */
+ 	conf->log_negligible_adjfreq			= LOG_NEGLIGIBLE_ADJFREQ; // 0.05;
+ 
++	/* negligible drift to not log (ms) */
++	conf->synced_offset			= SYNCED_OFFSET; // 100;
++
+ 	/* samples for est. of permanent drift */
+ 	conf->frequency_samples			= FREQUENCY_SAMPLES; // 8;
+ 
+@@ -1372,6 +1382,8 @@ print_conf(struct ntpd_conf *lconf)
+ 	fprintf(stdout, "Neglible drift time to not log: %d milliseconds\n", conf->log_negligible_adjtime);
+ 	fprintf(stdout, "Neglible frequency rate to not log: %f ppm\n",      conf->log_negligible_adjfreq);
+ 	fprintf(stdout, "\n");
++	fprintf(stdout, "Synced time offset threshold: %d microseconds\n", conf->synced_offset);
++	fprintf(stdout, "\n");
+ 	fprintf(stdout, "Frequency samples for estimation of permanent drift: %d\n", conf->frequency_samples);
+ 	fprintf(stdout, "Maximum frequency correction per iteration: %f\n",          conf->max_frequency_adjust);
+ 	fprintf(stdout, "\n");
+--- a/src/ntpd.conf.5	2020-08-03 23:21:11.124672226 +0300
++++ b/src/ntpd.conf.5	2021-01-20 23:12:45.628871438 +0200
+@@ -676,6 +676,14 @@ Negligible drift time to not log in mill
+ 32
+ .El
+ .Ed
++.It Ic synced_offset Ar microseconds
++Synced time offset threshold in microseconds.
++.Bd -literal -offset indent
++.Bl -tag -width "Default:" -compact
++.It Default:
++100
++.El
++.Ed
+ .It Ic max_frequency_adjust Ar decimal
+ Maximum allowed frequency correction per iteration.
+ .Bd -literal -offset indent
+--- a/ntpd.conf	2020-08-03 23:19:18.951338773 +0300
++++ b/ntpd.conf	2021-01-20 23:14:56.802048541 +0200
+@@ -246,6 +246,12 @@ constraints from "https://www.duckduckgo
+ #
+ # log_negligible_adjtime      32
+ 
++# Synced time offset threshold in microseconds.
++# If our time adjustment value exceeds the threshold
++# we assume the clock is not synced anymore.
++#
++# synced_offset               100
++
+ # Maximum allowed frequency correction per iteration.
+ #
+ # max_frequency_adjust        0.0128
