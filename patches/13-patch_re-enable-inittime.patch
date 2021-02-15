@@ -1,0 +1,39 @@
+From: Pekka Helenius <fincer89@hotmail.com>
+Date: Mon, 15 Feb 2021 22:20:14 +0300
+Subject: Re-enable initial time synchronization setting (-s and -S parameters).
+
+--- a/src/ntpd.c	2021-01-20 23:00:53.946365898 +0200
++++ b/src/ntpd.c	2021-02-15 22:18:58.517431728 +0200
+@@ -167,7 +167,6 @@ main(int argc, char *argv[])
+ 	char			**argv0 = argv;
+ 	char			*pname = NULL;
+ 	time_t			 settime_deadline = 0;
+-	int			 sopt = 0;
+ 
+ 	__progname = get_progname(argv[0]);
+ 
+@@ -213,8 +212,10 @@ main(int argc, char *argv[])
+ 			lconf.pid_file = optarg;
+ 			break;
+ 		case 's':
++			lconf.settime = 1;
++			break;
+ 		case 'S':
+-			sopt = ch;
++			lconf.settime = 0;
+ 			break;
+ 		case 'v':
+ 			lconf.verbose++;
+@@ -232,12 +233,6 @@ main(int argc, char *argv[])
+ 
+ 	log_init(logdest, lconf.verbose, LOG_DAEMON);
+ 
+-	if (sopt) {
+-		log_warnx("-%c option no longer works and will be removed soon.",
+-		    sopt);
+-		log_warnx("Please reconfigure to use constraints or trusted servers.");
+-	}
+-
+ 	argc -= optind;
+ 	argv += optind;
+ 	if (argc > 0)

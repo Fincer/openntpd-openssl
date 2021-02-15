@@ -34,6 +34,7 @@ See also [my blog post on fjordtek.com](https://fjordtek.com/categories/news/202
 | [10-patch_peer-constraint-logs.patch](patches/10-patch_peer-constraint-logs.patch)                             | Improve constraint & NTP peer log entries; update conf & man                               |
 | [11-patch_fix-constraint-time-overflow-32bit.patch](patches/11-patch_fix-constraint-time-overflow-32bit.patch) | Cast constraint median time value to unsigned long. Fixes overflow on 32-bit systems.      |
 | [12-patch_fix-adjtime.patch](patches/12-patch_fix-adjtime.patch)                                               | Assume system clock is synced when time offset is in specific range limits (quick hotfix). |
+| [13-patch_re-enable-inittime.patch](patches/13-patch_re-enable-inittime.patch)                                 | Re-enable initial time synchronization setting (-s and -S parameters).                     |
 
 ## Usage
 
